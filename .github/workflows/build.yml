@@ -1,0 +1,63 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: Version name, for example 1.0
+        required: true
+        default: '1.0'
+      version_code:
+        description: Android version code, a positive integer
+        required: true
+        default: '100'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      APP_VERSION_NAME: ${{ inputs.version_name || '1.0' }}
+      APP_VERSION_CODE: ${{ inputs.version_code || '100' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - uses: android-actions/setup-android@v4
+      - name: Install Android SDK
+        run: |
+          sdkmanager 'platforms;android-37.0'
+          ln -s "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37"
+      - name: Build debug APK
+        run: |
+          [[ "$APP_VERSION_NAME" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$APP_VERSION_CODE" =~ ^[1-9][0-9]*$ ]]
+          sed -i "s/^version=.*/version=$APP_VERSION_NAME/" app/src/main/resources/META-INF/xposed/module.prop
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon -PappVersionName="$APP_VERSION_NAME" -PappVersionCode="$APP_VERSION_CODE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ZetaCard-${{ env.APP_VERSION_NAME }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Publish APK to Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="v$APP_VERSION_NAME"
+            apk="ZetaCard-$APP_VERSION_NAME.apk"
+            cp app/build/outputs/apk/debug/app-debug.apk "$apk"
+            gh release create "$tag" "$apk" --target "$GITHUB_SHA" --title "ZetaCard $APP_VERSION_NAME" --notes "Debug-signed APK for ZetaCard $APP_VERSION_NAME."
+          else
+            tag="preview-$GITHUB_RUN_NUMBER"
+            apk="ZetaCard-preview-$GITHUB_RUN_NUMBER.apk"
+            cp app/build/outputs/apk/debug/app-debug.apk "$apk"
+            gh release create "$tag" "$apk" --target "$GITHUB_SHA" --title "ZetaCard preview $GITHUB_RUN_NUMBER" --notes "Debug-signed preview APK from commit $GITHUB_SHA." --prerelease --latest=false
+          fi

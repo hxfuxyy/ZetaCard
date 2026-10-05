@@ -1,0 +1,5 @@
+name=ZetaCard
+description=Personal card art for Google Wallet
+version=1.0
+minApiVersion=102
+targetApiVersion=102
