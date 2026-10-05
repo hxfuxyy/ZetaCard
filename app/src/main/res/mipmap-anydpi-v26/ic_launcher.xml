@@ -1,0 +1,4 @@
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/zeta_navy"/>
+    <foreground android:drawable="@drawable/zeta_logo_color"/>
+</adaptive-icon>
