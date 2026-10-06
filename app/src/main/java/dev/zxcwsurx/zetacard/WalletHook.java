@@ -125,12 +125,28 @@ public final class WalletHook extends XposedModule {
     }
 
     private void installComposeCards(Context context, ClassLoader loader) {
-        try {
-            Class<?> cardState = Class.forName("badc", false, loader);
-            Class<?> keyedState = Class.forName("sdb", false, loader);
-            Class<?> urlModel = Class.forName("awmf", false, loader);
-            Class<?> imageModel = Class.forName("awmg", false, loader);
-            Class<?> bitmapModel = Class.forName("awlt", false, loader);
+        String[][] layouts = {
+                {"bakc", "sds", "awtc", "awtd", "awsq", "azth"},
+                {"badc", "sdb", "awmf", "awmg", "awlt", "azmh"}
+        };
+        for (String[] layout : layouts) {
+            try {
+                installComposeCards(context, loader, layout);
+                Log.i(TAG, "Compose card hooks installed: " + layout[0]);
+                return;
+            } catch (Throwable error) {
+                Log.i(TAG, "Compose layout unavailable: " + layout[0] + " (" + error.getClass().getSimpleName() + ")");
+            }
+        }
+        Log.w(TAG, "Compose card hooks unavailable for this Wallet version");
+    }
+
+    private void installComposeCards(Context context, ClassLoader loader, String[] layout) throws Exception {
+            Class<?> cardState = Class.forName(layout[0], false, loader);
+            Class<?> keyedState = Class.forName(layout[1], false, loader);
+            Class<?> urlModel = Class.forName(layout[2], false, loader);
+            Class<?> imageModel = Class.forName(layout[3], false, loader);
+            Class<?> bitmapModel = Class.forName(layout[4], false, loader);
             Field cardArt = cardState.getDeclaredField("a");
             Field url = urlModel.getDeclaredField("a");
             cardArt.setAccessible(true);
@@ -158,7 +174,8 @@ public final class WalletHook extends XposedModule {
                         }
                         return chain.proceed();
                     });
-            Class<?> image = Class.forName("azmh", false, loader);
+            Class<?> image = Class.forName(layout[5], false, loader);
+            boolean rendererInstalled = false;
             for (Method method : image.getDeclaredMethods()) {
                 Class<?>[] p = method.getParameterTypes();
                 if (!Modifier.isStatic(method.getModifiers()) || !method.getName().equals("b") ||
@@ -199,10 +216,10 @@ public final class WalletHook extends XposedModule {
                             } catch (Throwable error) { Log.w(TAG, "Compose artwork skipped", error); }
                             return chain.proceed();
                         });
+                rendererInstalled = true;
                 break;
             }
-            Log.i(TAG, "Compose card hooks installed");
-        } catch (Throwable error) { Log.w(TAG, "Compose card hooks unavailable", error); }
+            if (!rendererInstalled) throw new NoSuchMethodException("Compose image renderer");
     }
 
     private void installDrawHook(Context context, Class<?> type) {
