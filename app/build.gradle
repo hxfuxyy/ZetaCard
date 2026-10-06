@@ -9,8 +9,8 @@ android {
         applicationId 'dev.zxcwsurx.zetacard'
         minSdk 29
         targetSdk 35
-        versionCode = (project.findProperty('appVersionCode') ?: '110').toString().toInteger()
-        versionName = (project.findProperty('appVersionName') ?: '1.1').toString()
+        versionCode = (project.findProperty('appVersionCode') ?: '120').toString().toInteger()
+        versionName = (project.findProperty('appVersionName') ?: '1.2').toString()
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
