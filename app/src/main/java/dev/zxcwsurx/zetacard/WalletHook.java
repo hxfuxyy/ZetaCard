@@ -43,6 +43,8 @@ public final class WalletHook extends XposedModule {
         @Override protected int sizeOf(String key, Bitmap value) { return value.getByteCount() / 1024; }
     };
     private final Set<String> composeCardUrls = new HashSet<>();
+    private final Set<String> loggedCardIds = new HashSet<>();
+    private final Set<String> loggedCustomIds = new HashSet<>();
     private boolean searched;
 
     @Override public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
@@ -93,10 +95,12 @@ public final class WalletHook extends XposedModule {
             dex.close();
         } catch (Throwable error) { Log.w(TAG, "Cannot enumerate Wallet classes", error); }
         Log.i(TAG, "Wallet classes inspected: " + names.size());
+        List<Class<?>> classes = new ArrayList<>(names.size());
         int count = 0;
         for (String name : names) {
             try {
                 Class<?> type = Class.forName(name, false, loader);
+                classes.add(type);
                 for (Method method : type.getDeclaredMethods()) {
                     Class<?>[] p = method.getParameterTypes();
                     if (p.length != 3 || p[1] != ImageView.class ||
@@ -120,41 +124,41 @@ public final class WalletHook extends XposedModule {
                 }
             } catch (Throwable ignored) { }
         }
-        installComposeCards(context, loader);
+        installComposeCards(context, classes);
         return count;
     }
 
-    private void installComposeCards(Context context, ClassLoader loader) {
-        String[][] layouts = {
-                {"bakc", "sds", "awtc", "awtd", "awsq", "azth"},
-                {"badc", "sdb", "awmf", "awmg", "awlt", "azmh"}
-        };
-        for (String[] layout : layouts) {
-            try {
-                installComposeCards(context, loader, layout);
-                Log.i(TAG, "Compose card hooks installed: " + layout[0]);
-                return;
-            } catch (Throwable error) {
-                Log.i(TAG, "Compose layout unavailable: " + layout[0] + " (" + error.getClass().getSimpleName() + ")");
-            }
+    private static final class ComposeLayout {
+        final Class<?> urlModel;
+        final Field cardArt;
+        final Field url;
+        final Constructor<?> bitmapConstructor;
+        final Constructor<?> cardConstructor;
+        final Method renderer;
+
+        ComposeLayout(Class<?> urlModel, Field cardArt, Field url,
+                Constructor<?> bitmapConstructor, Constructor<?> cardConstructor, Method renderer) {
+            this.urlModel = urlModel;
+            this.cardArt = cardArt;
+            this.url = url;
+            this.bitmapConstructor = bitmapConstructor;
+            this.cardConstructor = cardConstructor;
+            this.renderer = renderer;
         }
-        Log.w(TAG, "Compose card hooks unavailable for this Wallet version");
     }
 
-    private void installComposeCards(Context context, ClassLoader loader, String[] layout) throws Exception {
-            Class<?> cardState = Class.forName(layout[0], false, loader);
-            Class<?> keyedState = Class.forName(layout[1], false, loader);
-            Class<?> urlModel = Class.forName(layout[2], false, loader);
-            Class<?> imageModel = Class.forName(layout[3], false, loader);
-            Class<?> bitmapModel = Class.forName(layout[4], false, loader);
-            Field cardArt = cardState.getDeclaredField("a");
-            Field url = urlModel.getDeclaredField("a");
-            cardArt.setAccessible(true);
-            url.setAccessible(true);
-            Constructor<?> bitmapConstructor = bitmapModel.getDeclaredConstructor(Bitmap.class);
-            bitmapConstructor.setAccessible(true);
-            Constructor<?> cardConstructor = keyedState.getDeclaredConstructor(cardState, Object.class);
-            cardConstructor.setAccessible(true);
+    private void installComposeCards(Context context, List<Class<?>> classes) {
+        try {
+            ComposeLayout layout = findComposeLayout(classes);
+            if (layout == null) {
+                Log.w(TAG, "Compose card structure not found in this Wallet version");
+                return;
+            }
+            Field cardArt = layout.cardArt;
+            Field url = layout.url;
+            Class<?> urlModel = layout.urlModel;
+            Constructor<?> bitmapConstructor = layout.bitmapConstructor;
+            Constructor<?> cardConstructor = layout.cardConstructor;
             hook(cardConstructor).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .setId("zetacard-compose-discover")
                     .intercept(chain -> {
@@ -165,6 +169,9 @@ public final class WalletHook extends XposedModule {
                             if ("https".equals(uri.getScheme())) {
                                 synchronized (composeCardUrls) { composeCardUrls.add(source); }
                                 String id = sha256(source);
+                                synchronized (loggedCardIds) {
+                                    if (loggedCardIds.add(id)) Log.i(TAG, "Compose card discovered: " + id.substring(0, 8));
+                                }
                                 Bundle request = new Bundle();
                                 request.putString("id", id);
                                 request.putString("label", "Payment card");
@@ -174,14 +181,7 @@ public final class WalletHook extends XposedModule {
                         }
                         return chain.proceed();
                     });
-            Class<?> image = Class.forName(layout[5], false, loader);
-            boolean rendererInstalled = false;
-            for (Method method : image.getDeclaredMethods()) {
-                Class<?>[] p = method.getParameterTypes();
-                if (!Modifier.isStatic(method.getModifiers()) || !method.getName().equals("b") ||
-                        p.length != 11 || p[0] != imageModel) continue;
-                method.setAccessible(true);
-                hook(method).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+            hook(layout.renderer).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                         .setId("zetacard-compose-art")
                         .intercept(chain -> {
                             try {
@@ -197,6 +197,9 @@ public final class WalletHook extends XposedModule {
                                         Bundle answer = context.getContentResolver().call(ArtProvider.URI, "art", null, request);
                                         String path = answer == null ? null : answer.getString("uri");
                                         if (path != null) {
+                                            synchronized (loggedCustomIds) {
+                                                if (loggedCustomIds.add(id)) Log.i(TAG, "Compose custom artwork found: " + id.substring(0, 8));
+                                            }
                                             String cacheKey = id + ":" + answer.getLong("revision");
                                             Bitmap bitmap = bitmaps.get(cacheKey);
                                             if (bitmap == null) {
@@ -216,10 +219,120 @@ public final class WalletHook extends XposedModule {
                             } catch (Throwable error) { Log.w(TAG, "Compose artwork skipped", error); }
                             return chain.proceed();
                         });
-                rendererInstalled = true;
-                break;
+            Log.i(TAG, "Compose card hooks installed: " + cardConstructor.getDeclaringClass().getName()
+                    + " / " + layout.renderer.getDeclaringClass().getName());
+        } catch (Throwable error) { Log.w(TAG, "Compose card hooks unavailable", error); }
+    }
+
+    private ComposeLayout findComposeLayout(List<Class<?>> classes) {
+        List<Class<?>> bitmapModels = new ArrayList<>();
+        List<Class<?>> urlModels = new ArrayList<>();
+        List<Class<?>> cardStates = new ArrayList<>();
+        List<Class<?>> keyedStates = new ArrayList<>();
+        List<Method> renderers = new ArrayList<>();
+        for (Class<?> type : classes) {
+            try {
+                int instanceFields = 0;
+                int bitmapFields = 0;
+                int stringFields = 0;
+                int booleanFields = 0;
+                for (Field field : type.getDeclaredFields()) {
+                    if (Modifier.isStatic(field.getModifiers())) continue;
+                    instanceFields++;
+                    if (field.getType() == Bitmap.class) bitmapFields++;
+                    if (field.getType() == String.class) stringFields++;
+                    if (field.getType() == Boolean.TYPE) booleanFields++;
+                }
+                Class<?> parent = type.getSuperclass();
+                if (parent != null && parent != Object.class) {
+                    if (instanceFields == 1 && bitmapFields == 1 && hasConstructor(type, Bitmap.class))
+                        bitmapModels.add(type);
+                    if (instanceFields >= 3 && instanceFields <= 4 && stringFields == 2 &&
+                            hasUrlConstructor(type)) urlModels.add(type);
+                }
+                if (instanceFields >= 8 && instanceFields <= 10 && booleanFields == 3)
+                    cardStates.add(type);
+                if (instanceFields == 2) keyedStates.add(type);
+                for (Method method : type.getDeclaredMethods()) {
+                    Class<?>[] p = method.getParameterTypes();
+                    if (Modifier.isStatic(method.getModifiers()) && method.getReturnType() == Void.TYPE &&
+                            p.length == 11 && p[1] == String.class && p[5] == Float.TYPE &&
+                            p[9] == Integer.TYPE && p[10] == Integer.TYPE) renderers.add(method);
+                }
+            } catch (Throwable ignored) { }
+        }
+        Log.i(TAG, "Compose structure candidates: " + bitmapModels.size() + " bitmap, " +
+                urlModels.size() + " URL, " + cardStates.size() + " state, " + renderers.size() + " renderer");
+        List<ComposeLayout> matches = new ArrayList<>();
+        for (Class<?> bitmapModel : bitmapModels) {
+            Class<?> imageModel = bitmapModel.getSuperclass();
+            for (Class<?> urlModel : urlModels) {
+                if (urlModel.getSuperclass() != imageModel) continue;
+                Field url = null;
+                for (Field field : urlModel.getDeclaredFields()) {
+                    if (!Modifier.isStatic(field.getModifiers()) && field.getType() == String.class) {
+                        url = field;
+                        break;
+                    }
+                }
+                if (url == null) continue;
+                for (Class<?> cardState : cardStates) {
+                    Field cardArt = null;
+                    for (Field field : cardState.getDeclaredFields()) {
+                        if (!Modifier.isStatic(field.getModifiers()) && field.getType() == imageModel) {
+                            cardArt = field;
+                            break;
+                        }
+                    }
+                    if (cardArt == null || !hasCardConstructor(cardState, imageModel)) continue;
+                    for (Class<?> keyedState : keyedStates) {
+                        Constructor<?> cardConstructor;
+                        try { cardConstructor = keyedState.getDeclaredConstructor(cardState, Object.class); }
+                        catch (NoSuchMethodException ignored) { continue; }
+                        for (Method renderer : renderers) {
+                            if (renderer.getParameterTypes()[0] != imageModel) continue;
+                            try {
+                                Constructor<?> bitmapConstructor = bitmapModel.getDeclaredConstructor(Bitmap.class);
+                                matches.add(new ComposeLayout(urlModel, cardArt, url,
+                                        bitmapConstructor, cardConstructor, renderer));
+                            } catch (NoSuchMethodException ignored) { }
+                        }
+                    }
+                }
             }
-            if (!rendererInstalled) throw new NoSuchMethodException("Compose image renderer");
+        }
+        if (matches.size() != 1) {
+            Log.w(TAG, "Compose structure matches: " + matches.size());
+            return null;
+        }
+        ComposeLayout result = matches.get(0);
+        result.cardArt.setAccessible(true);
+        result.url.setAccessible(true);
+        result.bitmapConstructor.setAccessible(true);
+        result.cardConstructor.setAccessible(true);
+        result.renderer.setAccessible(true);
+        return result;
+    }
+
+    private boolean hasConstructor(Class<?> type, Class<?> parameter) {
+        try { type.getDeclaredConstructor(parameter); return true; }
+        catch (NoSuchMethodException ignored) { return false; }
+    }
+
+    private boolean hasUrlConstructor(Class<?> type) {
+        for (Constructor<?> constructor : type.getDeclaredConstructors()) {
+            Class<?>[] p = constructor.getParameterTypes();
+            if (p.length >= 3 && p[0] == String.class && p[1] == String.class) return true;
+        }
+        return false;
+    }
+
+    private boolean hasCardConstructor(Class<?> type, Class<?> imageModel) {
+        for (Constructor<?> constructor : type.getDeclaredConstructors()) {
+            Class<?>[] p = constructor.getParameterTypes();
+            if (p.length >= 8 && p.length <= 9 && p[0] == imageModel) return true;
+        }
+        return false;
     }
 
     private void installDrawHook(Context context, Class<?> type) {
@@ -297,6 +410,9 @@ public final class WalletHook extends XposedModule {
         }
         if (original == null) return;
         String id = sha256(original.toString());
+        synchronized (loggedCardIds) {
+            if (loggedCardIds.add(id)) Log.i(TAG, "Legacy card discovered: " + id.substring(0, 8));
+        }
         synchronized (cardIds) { cardIds.put((Drawable) args[0], id); }
         Bundle request = new Bundle();
         request.putString("id", id);

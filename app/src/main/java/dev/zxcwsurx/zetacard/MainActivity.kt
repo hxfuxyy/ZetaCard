@@ -176,7 +176,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); refresh++ }
+    override fun onResume() { super.onResume(); grantWalletAccess(); refresh++ }
 
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
 
