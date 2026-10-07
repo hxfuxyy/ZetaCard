@@ -65,13 +65,14 @@ public final class ArtProvider extends ContentProvider {
         if ("discover".equals(method)) {
             SharedPreferences p = prefs(getContext());
             Set<String> ids = new HashSet<>(p.getStringSet("ids", Collections.emptySet()));
-            ids.add(id);
+            boolean firstSeen = ids.add(id);
             String label = extras.getString("label", "Payment card");
             label = label.replaceAll("[\\p{Cntrl}]", "").trim();
             if (label.isEmpty() || label.length() > 60 || label.matches(".*[0-9]{8,}.*")) label = "Payment card";
             SharedPreferences.Editor editor = p.edit().putStringSet("ids", ids);
             if (!p.contains("name." + id)) editor.putString("name." + id, label);
             editor.apply();
+            if (firstSeen) DiagnosticsLog.info(getContext(), "Card discovered: " + id.substring(0, 8));
             String stockUrl = extras.getString("stockUrl");
             Uri source = stockUrl == null ? null : Uri.parse(stockUrl);
             String host = source == null ? null : source.getHost();

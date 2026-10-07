@@ -2,6 +2,7 @@ package dev.zxcwsurx.zetacard;
 
 import android.app.Application;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -9,6 +10,7 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
 import android.util.Log;
 import android.util.LruCache;
 import android.widget.ImageView;
@@ -45,7 +47,22 @@ public final class WalletHook extends XposedModule {
     private final Set<String> composeCardUrls = new HashSet<>();
     private final Set<String> loggedCardIds = new HashSet<>();
     private final Set<String> loggedCustomIds = new HashSet<>();
+    private final Set<String> loggedFailures = new HashSet<>();
+    private volatile long providerRetryAfter;
+    private boolean loggedComposeState;
+    private boolean loggedComposeRender;
     private boolean searched;
+
+    @Override public boolean onHotReloading(XposedModuleInterface.HotReloadingParam param) {
+        return true;
+    }
+
+    @Override public void onHotReloaded(XposedModuleInterface.HotReloadedParam param) {
+        for (XposedInterface.HookHandle handle : param.getOldHookHandles()) handle.unhook();
+        Context context = currentApplication();
+        if (context != null) searchOnce(context, context.getClassLoader());
+        else failure("reload-context", "Wallet context unavailable after hook reload", null);
+    }
 
     @Override public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
         Log.i(TAG, "Loaded in " + param.getProcessName());
@@ -73,7 +90,21 @@ public final class WalletHook extends XposedModule {
     private synchronized void searchOnce(Context context, ClassLoader loader) {
         if (searched) return;
         searched = true;
-        Log.i(TAG, "Artwork render hooks: " + install(context, loader));
+        try { event("Artwork render hooks: " + install(context, loader)); }
+        catch (Throwable error) { failure("scan", "Hook setup failed", error); }
+    }
+
+    private void event(String message) {
+        Log.i(TAG, message);
+        try { log(Log.INFO, TAG, message); } catch (Throwable ignored) { }
+    }
+
+    private void failure(String key, String message, Throwable error) {
+        synchronized (loggedFailures) { if (!loggedFailures.add(key)) return; }
+        String detail = error == null ? "" : ": " + error.getClass().getSimpleName() +
+                (error.getMessage() == null ? "" : " - " + error.getMessage());
+        Log.w(TAG, message + detail);
+        try { log(Log.WARN, TAG, message + detail); } catch (Throwable ignored) { }
     }
 
     private Context currentApplication() {
@@ -84,6 +115,24 @@ public final class WalletHook extends XposedModule {
     }
 
     private int install(Context context, ClassLoader loader) {
+        SharedPreferences cache = context.getSharedPreferences("zetacard_hook_cache", Context.MODE_PRIVATE);
+        long version = walletVersion(context);
+        long requestedScan = 0;
+        try { requestedScan = getRemotePreferences("control").getLong("scan", 0); }
+        catch (Throwable error) { failure("control", "LSPosed scan control unavailable", error); }
+        String savedCompose = cache.getString("compose", null);
+        if (version != -1 && cache.getLong("version", -1) == version &&
+                cache.getLong("scan", 0) == requestedScan && savedCompose != null) {
+            try {
+                ComposeLayout layout = restoreComposeLayout(loader, savedCompose);
+                List<Method> legacy = restoreLegacyMethods(loader, cache.getString("legacy", ""));
+                for (Method method : legacy) installLegacyHook(context, method);
+                installComposeCards(context, layout);
+                event("Using saved hook map for Wallet " + version);
+                return legacy.size();
+            } catch (Throwable error) { failure("cache", "Saved hook map invalid; scanning Wallet", error); }
+        }
+        event("Scanning Wallet " + version + " for artwork hooks");
         List<String> names = new ArrayList<>();
         try {
             DexFile dex = new DexFile(context.getApplicationInfo().sourceDir);
@@ -97,6 +146,7 @@ public final class WalletHook extends XposedModule {
         Log.i(TAG, "Wallet classes inspected: " + names.size());
         List<Class<?>> classes = new ArrayList<>(names.size());
         int count = 0;
+        List<String> legacyNames = new ArrayList<>();
         for (String name : names) {
             try {
                 Class<?> type = Class.forName(name, false, loader);
@@ -107,25 +157,55 @@ public final class WalletHook extends XposedModule {
                             !Drawable.class.isAssignableFrom(p[0]) ||
                             method.getReturnType() != Void.TYPE ||
                             !hasUriField(p[2])) continue;
-                    if (!installed.add(method)) continue;
-                    method.setAccessible(true);
-                    hook(method).setPriority(XposedInterface.PRIORITY_DEFAULT)
-                            .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                            .setId("zetacard-" + method.toGenericString().hashCode())
-                            .intercept(chain -> {
-                                Object result = chain.proceed();
-                                try { paint(context, chain.getArgs().toArray()); }
-                                catch (Throwable error) { Log.w(TAG, "Artwork skipped", error); }
-                                return result;
-                            });
+                    installLegacyHook(context, method);
                     count++;
+                    legacyNames.add(type.getName() + "|" + method.getName() + "|" + p[0].getName() + "|" + p[2].getName());
                     Log.i(TAG, "Renderer candidate: " + method.toGenericString());
-                    installDrawHook(context, p[0]);
                 }
             } catch (Throwable ignored) { }
         }
-        installComposeCards(context, classes);
+        ComposeLayout layout = findComposeLayout(classes);
+        installComposeCards(context, layout);
+        if (version != -1) {
+            cache.edit().putLong("version", version).putString("compose", layout == null ? "NONE" : saveComposeLayout(layout))
+                    .putString("legacy", String.join(";", legacyNames)).putLong("scan", requestedScan).commit();
+            event("Hook map saved for Wallet " + version);
+        }
         return count;
+    }
+
+    private long walletVersion(Context context) {
+        try { return context.getPackageManager().getPackageInfo(WALLET, 0).getLongVersionCode(); }
+        catch (Exception ignored) { return -1; }
+    }
+
+    private void installLegacyHook(Context context, Method method) {
+        if (!installed.add(method)) return;
+        method.setAccessible(true);
+        hook(method).setPriority(XposedInterface.PRIORITY_DEFAULT)
+                .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                .setId("zetacard-" + method.toGenericString().hashCode())
+                .intercept(chain -> {
+                    Object result = chain.proceed();
+                    try { paint(context, chain.getArgs().toArray()); }
+                    catch (Throwable error) { failure("legacy-art", "Legacy artwork skipped", error); }
+                    return result;
+                });
+        installDrawHook(context, method.getParameterTypes()[0]);
+    }
+
+    private List<Method> restoreLegacyMethods(ClassLoader loader, String encoded) throws Exception {
+        List<Method> methods = new ArrayList<>();
+        if (encoded.isEmpty()) return methods;
+        for (String part : encoded.split(";")) {
+            String[] fields = part.split("\\|", -1);
+            if (fields.length != 4) throw new IllegalArgumentException("Invalid legacy hook cache");
+            Class<?> type = Class.forName(fields[0], false, loader);
+            Class<?> drawable = Class.forName(fields[2], false, loader);
+            Class<?> data = Class.forName(fields[3], false, loader);
+            methods.add(type.getDeclaredMethod(fields[1], drawable, ImageView.class, data));
+        }
+        return methods;
     }
 
     private static final class ComposeLayout {
@@ -147,11 +227,48 @@ public final class WalletHook extends XposedModule {
         }
     }
 
-    private void installComposeCards(Context context, List<Class<?>> classes) {
+    private String saveComposeLayout(ComposeLayout layout) {
+        return String.join("|", layout.cardConstructor.getParameterTypes()[0].getName(),
+                layout.cardConstructor.getDeclaringClass().getName(), layout.urlModel.getName(),
+                layout.bitmapConstructor.getDeclaringClass().getName(), layout.cardArt.getName(),
+                layout.url.getName(), layout.renderer.getDeclaringClass().getName(), layout.renderer.getName());
+    }
+
+    private ComposeLayout restoreComposeLayout(ClassLoader loader, String encoded) throws Exception {
+        if ("NONE".equals(encoded)) return null;
+        String[] fields = encoded.split("\\|", -1);
+        if (fields.length != 8) throw new IllegalArgumentException("Invalid Compose hook cache");
+        Class<?> cardState = Class.forName(fields[0], false, loader);
+        Class<?> keyedState = Class.forName(fields[1], false, loader);
+        Class<?> urlModel = Class.forName(fields[2], false, loader);
+        Class<?> bitmapModel = Class.forName(fields[3], false, loader);
+        Class<?> imageModel = bitmapModel.getSuperclass();
+        Field cardArt = cardState.getDeclaredField(fields[4]);
+        Field url = urlModel.getDeclaredField(fields[5]);
+        Constructor<?> bitmapConstructor = bitmapModel.getDeclaredConstructor(Bitmap.class);
+        Constructor<?> cardConstructor = keyedState.getDeclaredConstructor(cardState, Object.class);
+        Class<?> rendererType = Class.forName(fields[6], false, loader);
+        Method renderer = null;
+        for (Method method : rendererType.getDeclaredMethods()) {
+            Class<?>[] p = method.getParameterTypes();
+            if (method.getName().equals(fields[7]) && Modifier.isStatic(method.getModifiers()) &&
+                    method.getReturnType() == Void.TYPE && p.length == 11 && p[0] == imageModel &&
+                    p[1] == String.class && p[5] == Float.TYPE && p[9] == Integer.TYPE &&
+                    p[10] == Integer.TYPE) { renderer = method; break; }
+        }
+        if (renderer == null) throw new NoSuchMethodException("Saved Compose renderer");
+        cardArt.setAccessible(true);
+        url.setAccessible(true);
+        bitmapConstructor.setAccessible(true);
+        cardConstructor.setAccessible(true);
+        renderer.setAccessible(true);
+        return new ComposeLayout(urlModel, cardArt, url, bitmapConstructor, cardConstructor, renderer);
+    }
+
+    private void installComposeCards(Context context, ComposeLayout layout) {
         try {
-            ComposeLayout layout = findComposeLayout(classes);
             if (layout == null) {
-                Log.w(TAG, "Compose card structure not found in this Wallet version");
+                failure("compose-missing", "Compose card structure not found", null);
                 return;
             }
             Field cardArt = layout.cardArt;
@@ -163,6 +280,10 @@ public final class WalletHook extends XposedModule {
                     .setId("zetacard-compose-discover")
                     .intercept(chain -> {
                         Object art = cardArt.get(chain.getArgs().get(0));
+                        if (!loggedComposeState) {
+                            loggedComposeState = true;
+                            event("Card state artwork model: " + (art == null ? "none" : art.getClass().getName()));
+                        }
                         if (urlModel.isInstance(art)) {
                             String source = (String) url.get(art);
                             Uri uri = Uri.parse(source);
@@ -176,7 +297,8 @@ public final class WalletHook extends XposedModule {
                                 request.putString("id", id);
                                 request.putString("label", "Payment card");
                                 request.putString("stockUrl", source);
-                                context.getContentResolver().call(ArtProvider.URI, "discover", null, request);
+                                try { context.getContentResolver().call(ArtProvider.URI, "discover", null, request); }
+                                catch (RuntimeException error) { failure("provider-discover", "Card list unavailable", error); }
                             }
                         }
                         return chain.proceed();
@@ -186,42 +308,33 @@ public final class WalletHook extends XposedModule {
                         .intercept(chain -> {
                             try {
                                 Object art = chain.getArgs().get(0);
+                                if (!loggedComposeRender) {
+                                    loggedComposeRender = true;
+                                    event("Artwork renderer model: " + (art == null ? "none" : art.getClass().getName()));
+                                }
                                 if (urlModel.isInstance(art)) {
                                     String source = (String) url.get(art);
                                     boolean card;
                                     synchronized (composeCardUrls) { card = composeCardUrls.contains(source); }
                                     if (card) {
                                         String id = sha256(source);
-                                        Bundle request = new Bundle();
-                                        request.putString("id", id);
-                                        Bundle answer = context.getContentResolver().call(ArtProvider.URI, "art", null, request);
-                                        String path = answer == null ? null : answer.getString("uri");
-                                        if (path != null) {
+                                        Bitmap bitmap = loadArt(context, id);
+                                        if (bitmap != null) {
                                             synchronized (loggedCustomIds) {
-                                                if (loggedCustomIds.add(id)) Log.i(TAG, "Compose custom artwork found: " + id.substring(0, 8));
+                                                if (loggedCustomIds.add(id)) event("Custom artwork active: " + id.substring(0, 8));
                                             }
-                                            String cacheKey = id + ":" + answer.getLong("revision");
-                                            Bitmap bitmap = bitmaps.get(cacheKey);
-                                            if (bitmap == null) {
-                                                try (java.io.InputStream stream = context.getContentResolver().openInputStream(Uri.parse(path))) {
-                                                    bitmap = BitmapFactory.decodeStream(stream);
-                                                }
-                                                if (bitmap != null) bitmaps.put(cacheKey, bitmap);
-                                            }
-                                            if (bitmap != null) {
-                                                Object[] args = chain.getArgs().toArray();
-                                                args[0] = bitmapConstructor.newInstance(bitmap);
-                                                return chain.proceed(args);
-                                            }
+                                            Object[] args = chain.getArgs().toArray();
+                                            args[0] = bitmapConstructor.newInstance(bitmap);
+                                            return chain.proceed(args);
                                         }
                                     }
                                 }
-                            } catch (Throwable error) { Log.w(TAG, "Compose artwork skipped", error); }
+                            } catch (Throwable error) { failure("compose-art", "Compose artwork skipped", error); }
                             return chain.proceed();
                         });
-            Log.i(TAG, "Compose card hooks installed: " + cardConstructor.getDeclaringClass().getName()
+            event("Compose card hooks installed: " + cardConstructor.getDeclaringClass().getName()
                     + " / " + layout.renderer.getDeclaringClass().getName());
-        } catch (Throwable error) { Log.w(TAG, "Compose card hooks unavailable", error); }
+        } catch (Throwable error) { failure("compose-install", "Compose card hooks unavailable", error); }
     }
 
     private ComposeLayout findComposeLayout(List<Class<?>> classes) {
@@ -393,6 +506,41 @@ public final class WalletHook extends XposedModule {
         return false;
     }
 
+    private Bitmap loadArt(Context context, String id) {
+        if (android.os.SystemClock.elapsedRealtime() >= providerRetryAfter) try {
+            Bundle request = new Bundle();
+            request.putString("id", id);
+            Bundle answer = context.getContentResolver().call(ArtProvider.URI, "art", null, request);
+            String path = answer == null ? null : answer.getString("uri");
+            if (path != null) {
+                String key = id + ":provider:" + answer.getLong("revision");
+                Bitmap cached = bitmaps.get(key);
+                if (cached != null) return cached;
+                try (java.io.InputStream stream = context.getContentResolver().openInputStream(Uri.parse(path))) {
+                    Bitmap image = BitmapFactory.decodeStream(stream);
+                    if (image != null) bitmaps.put(key, image);
+                    return image;
+                }
+            }
+        } catch (Throwable error) {
+            providerRetryAfter = android.os.SystemClock.elapsedRealtime() + 5000;
+            failure("provider-art", "Direct artwork access unavailable; using LSPosed data", error);
+        }
+        try {
+            long revision = getRemotePreferences("art").getLong(id, -1);
+            if (revision < 0) return null;
+            String key = id + ":remote:" + revision;
+            Bitmap cached = bitmaps.get(key);
+            if (cached != null) return cached;
+            try (ParcelFileDescriptor file = openRemoteFile("art_" + id)) {
+                Bitmap image = BitmapFactory.decodeFileDescriptor(file.getFileDescriptor());
+                if (image != null) bitmaps.put(key, image);
+                return image;
+            }
+        } catch (Throwable error) { failure("remote-art", "LSPosed artwork unavailable", error); }
+        return null;
+    }
+
     private void paint(Context context, Object[] args) throws Exception {
         if (args.length != 3 || !(args[1] instanceof ImageView) || args[2] == null) return;
         Uri original = null;
@@ -417,23 +565,14 @@ public final class WalletHook extends XposedModule {
         Bundle request = new Bundle();
         request.putString("id", id);
         request.putString("label", label);
-        context.getContentResolver().call(ArtProvider.URI, "discover", null, request);
-        Bundle answer = context.getContentResolver().call(ArtProvider.URI, "art", null, request);
-        String path = answer == null ? null : answer.getString("uri");
+        try { context.getContentResolver().call(ArtProvider.URI, "discover", null, request); }
+        catch (RuntimeException error) { failure("provider-discover", "Card list unavailable", error); }
         Drawable card = (Drawable) args[0];
-        if (path == null) {
+        Bitmap bitmap = loadArt(context, id);
+        if (bitmap == null) {
             synchronized (replacements) { replacements.remove(card); }
             return;
         }
-        String cacheKey = id + ":" + answer.getLong("revision");
-        Bitmap bitmap = bitmaps.get(cacheKey);
-        if (bitmap == null) {
-            try (java.io.InputStream stream = context.getContentResolver().openInputStream(Uri.parse(path))) {
-                bitmap = BitmapFactory.decodeStream(stream);
-            }
-            if (bitmap != null) bitmaps.put(cacheKey, bitmap);
-        }
-        if (bitmap == null) return;
         synchronized (replacements) {
             replacements.put(card, new BitmapDrawable(context.getResources(), bitmap));
         }

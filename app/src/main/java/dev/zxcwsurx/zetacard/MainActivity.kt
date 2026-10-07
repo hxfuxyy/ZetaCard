@@ -7,6 +7,10 @@ import android.graphics.Canvas as AndroidCanvas
 import android.graphics.Paint
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -32,6 +36,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -105,6 +111,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.max
 import kotlin.math.min
@@ -118,8 +127,22 @@ private enum class PhotoFit { CROP, STRETCH }
 
 class MainActivity : ComponentActivity() {
     private var refresh by mutableIntStateOf(0)
+    private var diagnostics by mutableStateOf<String?>(null)
     private var cropRequest by mutableStateOf<CropRequest?>(null)
     private var pickingId: String? = null
+
+    private val logExport = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri == null) return@registerForActivityResult
+        try {
+            contentResolver.openOutputStream(uri, "wt")?.bufferedWriter()?.use { it.write(exportText()) }
+                ?: error("Could not open the selected file")
+            DiagnosticsLog.info(this, "Logs exported")
+            toast("Logs exported")
+        } catch (error: Exception) {
+            DiagnosticsLog.warning(this, "Log export failed: ${error.javaClass.simpleName}")
+            toast(error.message ?: "Could not export logs")
+        }
+    }
 
     private val photoPicker = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         val id = pickingId
@@ -130,6 +153,7 @@ class MainActivity : ComponentActivity() {
                 val image = decodePicked(uri)
                 runOnUiThread { cropRequest = CropRequest(id, image) }
             } catch (error: Exception) {
+                DiagnosticsLog.warning(this, "Image open failed: ${error.javaClass.simpleName}: ${error.message}")
                 runOnUiThread { toast(error.message ?: "Could not open image") }
             }
         }
@@ -137,6 +161,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) DiagnosticsLog.clear(this)
+        DiagnosticsLog.info(this, "App opened")
+        if (ZetaApplication.isConnected()) DiagnosticsLog.info(this, "LSPosed data service connected")
         grantWalletAccess()
         setContent {
             ZetaTheme {
@@ -145,6 +172,11 @@ class MainActivity : ComponentActivity() {
                     onRefresh = { refresh++ },
                     onOpenWallet = ::openWallet,
                     onOpenGitHub = ::openGitHub,
+                    onDetectHooks = ::detectHooks,
+                    onShowLogs = ::showLogs,
+                    onExportLogs = ::exportLogs,
+                    logs = diagnostics,
+                    onCloseLogs = { diagnostics = null },
                     onChoose = { id ->
                         pickingId = id
                         photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -162,10 +194,13 @@ class MainActivity : ComponentActivity() {
                                     val result = if (fit == PhotoFit.CROP) cropBitmap(request.image, zoom, pan, viewport)
                                         else stretchBitmap(request.image)
                                     saveImage(request.id, result)
+                                    ZetaApplication.syncArt(application as ZetaApplication, request.id)
+                                    DiagnosticsLog.info(this, "Artwork saved: ${request.id.take(8)}")
                                     result.recycle()
                                     request.image.recycle()
                                     runOnUiThread { refresh++; toast("Artwork saved") }
                                 } catch (error: Exception) {
+                                    DiagnosticsLog.warning(this, "Artwork save failed: ${error.javaClass.simpleName}: ${error.message}")
                                     runOnUiThread { toast(error.message ?: "Could not save artwork") }
                                 }
                             }
@@ -196,6 +231,46 @@ class MainActivity : ComponentActivity() {
         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/hxfuxyy/ZetaCard")))
     }
 
+    private fun detectHooks() {
+        thread(name = "ZetaCard hook reset") {
+            val result = (application as ZetaApplication).requestHookScan()
+            runOnUiThread {
+                toast(result)
+                if (result.startsWith("Hook scan requested")) openWallet()
+            }
+        }
+    }
+
+    private fun showLogs() {
+        diagnostics = "Logs remain while ZetaCard is open or in the background. Closing and reopening it starts a new log. For Wallet hook events, export LSPosed logs.\n\n${DiagnosticsLog.read(this)}"
+    }
+
+    private fun exportLogs() {
+        val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        logExport.launch("ZetaCard-logs-$timestamp.txt")
+    }
+
+    private fun exportText(): String {
+        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+        fun version(packageName: String): String = try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "Unknown"
+        } catch (_: Exception) { "Not installed or unavailable" }
+        return """ZetaCard diagnostics
+Exported: $timestamp
+Device: ${Build.MANUFACTURER} ${Build.MODEL}
+Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})
+Firmware: ${Build.DISPLAY}
+Build ID: ${Build.ID}
+ZetaCard: ${version(packageName)}
+Google Wallet: ${version("com.google.android.apps.walletnfcrel")}
+
+App events
+${DiagnosticsLog.read(this)}
+
+Wallet hook events are available in LSPosed logs.
+"""
+    }
+
     private fun rename(id: String, name: String) {
         ArtProvider.prefs(this).edit().putString("name.$id", name).apply()
         refresh++
@@ -203,6 +278,8 @@ class MainActivity : ComponentActivity() {
 
     private fun restore(id: String) {
         ArtProvider.file(this, id).delete()
+        DiagnosticsLog.info(this, "Original artwork restored: ${id.take(8)}")
+        thread(name = "ZetaCard artwork remove") { ZetaApplication.syncArt(application as ZetaApplication, id) }
         refresh++
         toast("Original artwork restored")
     }
@@ -249,6 +326,11 @@ private fun AppScreen(
     onRefresh: () -> Unit,
     onOpenWallet: () -> Unit,
     onOpenGitHub: () -> Unit,
+    onDetectHooks: () -> Unit,
+    onShowLogs: () -> Unit,
+    onExportLogs: () -> Unit,
+    logs: String?,
+    onCloseLogs: () -> Unit,
     onChoose: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onRestore: (String) -> Unit,
@@ -328,6 +410,12 @@ private fun AppScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FilledTonalButton(onClick = onDetectHooks) { Text("Detect hooks") }
+                    OutlinedButton(onClick = onShowLogs) { Text("View logs") }
+                }
+            }
             if (cards.isEmpty()) item { EmptyState(onOpenWallet) }
             items(cards, key = { it.id }) { card ->
                 CardEditor(card, refresh, onChoose = { onChoose(card.id) },
@@ -372,6 +460,25 @@ private fun AppScreen(
                 }
             }
         }
+    }
+    if (logs != null) {
+        AlertDialog(
+            onDismissRequest = onCloseLogs,
+            title = { Text("Diagnostics") },
+            text = { Text(logs, modifier = Modifier.height(380.dp).verticalScroll(rememberScrollState()),
+                style = MaterialTheme.typography.bodySmall) },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = onExportLogs) { Text("Export") }
+                    TextButton(onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("ZetaCard logs", logs))
+                        onCloseLogs()
+                    }) { Text("Copy") }
+                }
+            },
+            dismissButton = { TextButton(onClick = onCloseLogs) { Text("Close") } },
+        )
     }
 }
 
