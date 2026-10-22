@@ -17,6 +17,7 @@ public final class ZetaApplication extends Application implements XposedServiceH
     @Override public void onCreate() {
         super.onCreate();
         DiagnosticsLog.info(this, "App service starting");
+        GrantReceiver.grant(this);
         XposedServiceHelper.registerListener(this);
     }
 
