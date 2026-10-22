@@ -55,6 +55,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -71,10 +72,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -129,6 +133,7 @@ class MainActivity : ComponentActivity() {
     private var refresh by mutableIntStateOf(0)
     private var diagnostics by mutableStateOf<String?>(null)
     private var cropRequest by mutableStateOf<CropRequest?>(null)
+    private var showWelcome by mutableStateOf(false)
     private var pickingId: String? = null
 
     private val logExport = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
@@ -165,11 +170,25 @@ class MainActivity : ComponentActivity() {
         DiagnosticsLog.info(this, "App opened")
         if (ZetaApplication.isConnected()) DiagnosticsLog.info(this, "LSPosed data service connected")
         grantWalletAccess()
+        showWelcome = !ArtProvider.prefs(this).getBoolean("welcomed", false)
         setContent {
             ZetaTheme {
+                if (showWelcome) {
+                    WelcomeScreen(
+                        checkRoot = { RootImport.hasRoot() },
+                        checkLsposed = { ZetaApplication.isConnected() },
+                        onDone = {
+                            ArtProvider.prefs(this).edit().putBoolean("welcomed", true).apply()
+                            showWelcome = false
+                            refresh++
+                            importFromWallet()
+                        },
+                    )
+                    return@ZetaTheme
+                }
                 AppScreen(
                     refresh = refresh,
-                    onRefresh = { refresh++ },
+                    onRefresh = ::importFromWallet,
                     onOpenWallet = ::openWallet,
                     onOpenGitHub = ::openGitHub,
                     onDetectHooks = ::detectHooks,
@@ -211,7 +230,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); grantWalletAccess(); refresh++ }
+    override fun onResume() { super.onResume(); grantWalletAccess(); refresh++; importFromWallet() }
+
+    private fun importFromWallet() {
+        thread(name = "ZetaCard root import") {
+            val added = RootImport.sync(this)
+            runOnUiThread { refresh++ }
+            if (added > 0) runOnUiThread { toast("Found $added card(s)") }
+        }
+    }
 
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
 
@@ -306,7 +333,11 @@ Wallet hook events are available in LSPosed logs.
 
 @Composable
 private fun ZetaTheme(content: @Composable () -> Unit) {
-    val colors = if (androidx.compose.foundation.isSystemInDarkTheme()) darkColorScheme(
+    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    val context = LocalContext.current
+    val colors = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    } else if (dark) darkColorScheme(
         primary = Color(0xFFB9C2FF), onPrimary = Color(0xFF142064),
         secondary = Color(0xFFC3C7E4), tertiary = Color(0xFFE0B6FF),
         background = Color(0xFF0E111C), surface = Color(0xFF151927),
@@ -591,6 +622,70 @@ private fun Artwork(file: File, refresh: Int, modifier: Modifier, placeholder: S
 }
 
 @Composable
+private fun WelcomeScreen(checkRoot: () -> Boolean, checkLsposed: () -> Boolean, onDone: () -> Unit) {
+    var rootOk by remember { mutableStateOf<Boolean?>(null) }
+    var lsposedOk by remember { mutableStateOf<Boolean?>(null) }
+    var checking by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    fun recheck() {
+        if (checking) return
+        checking = true
+        lsposedOk = checkLsposed()
+        rootOk = null
+        scope.launch {
+            val granted = withContext(Dispatchers.IO) { checkRoot() }
+            rootOk = granted
+            lsposedOk = checkLsposed()
+            checking = false
+        }
+    }
+    LaunchedEffect(Unit) { recheck() }
+    val ready = rootOk == true && lsposedOk == true
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Spacer(Modifier.height(12.dp))
+            Image(painterResource(R.drawable.zeta_logo_color), contentDescription = null,
+                modifier = Modifier.size(72.dp).clip(RoundedCornerShape(18.dp)))
+            Text("Welcome to ZetaCard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("ZetaCard gives your Google Wallet cards custom artwork. It needs two things to work:",
+                style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AccessRow("Root access", "Allow ZetaCard in your root manager (KernelSU / Magisk). Used to read your card list from Google Wallet.", rootOk)
+            AccessRow("LSPosed / Vector module", "Enable ZetaCard with Google Wallet in scope. This applies the artwork inside Wallet.", lsposedOk)
+            Spacer(Modifier.weight(1f))
+            OutlinedButton(onClick = { recheck() }, enabled = !checking, modifier = Modifier.fillMaxWidth()) {
+                Text(if (checking) "Checking…" else "Grant and re-check")
+            }
+            Button(onClick = onDone, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                Text(if (ready) "Continue" else "Continue anyway")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccessRow(title: String, detail: String, ok: Boolean?) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            val tint = when (ok) {
+                true -> MaterialTheme.colorScheme.primary
+                false -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            if (ok == null) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+            else Icon(if (ok) Icons.Outlined.CheckCircle else Icons.Outlined.Close,
+                contentDescription = null, tint = tint)
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(when (ok) { true -> "Granted"; false -> "Missing"; else -> "" },
+                style = MaterialTheme.typography.labelLarge, color = tint)
+        }
+    }
+}
+
+@Composable
 private fun CropEditor(request: CropRequest, onCancel: () -> Unit,
     onSave: (PhotoFit, Float, Offset, IntSize) -> Unit) {
     var fit by remember(request.id) { mutableStateOf(PhotoFit.CROP) }
@@ -624,8 +719,7 @@ private fun CropEditor(request: CropRequest, onCancel: () -> Unit,
                     else "Use the whole photo. It will stretch to the card shape.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.weight(1f))
-                Box((if (fit == PhotoFit.CROP) Modifier.fillMaxWidth().height(320.dp)
+                Box((if (fit == PhotoFit.CROP) Modifier.fillMaxWidth().weight(1f)
                     else Modifier.fillMaxWidth().aspectRatio(CARD_RATIO))
                     .clip(RoundedCornerShape(18.dp))
                     .background(MaterialTheme.colorScheme.surfaceContainer)
@@ -669,7 +763,7 @@ private fun CropEditor(request: CropRequest, onCancel: () -> Unit,
                             modifier = Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
                     }
                 }
-                Spacer(Modifier.weight(1f))
+                if (fit == PhotoFit.STRETCH) Spacer(Modifier.weight(1f))
                 if (fit == PhotoFit.CROP) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Outlined.Crop, contentDescription = null)

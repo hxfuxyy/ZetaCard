@@ -27,7 +27,9 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.WeakHashMap;
+import java.io.File;
 import dalvik.system.DexFile;
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -48,7 +50,7 @@ public final class WalletHook extends XposedModule {
     private final Set<String> loggedCardIds = new HashSet<>();
     private final Set<String> loggedCustomIds = new HashSet<>();
     private final Set<String> loggedFailures = new HashSet<>();
-    private volatile long providerRetryAfter;
+    private final Map<String, String[]> discovered = new LinkedHashMap<>();
     private boolean loggedComposeState;
     private boolean loggedComposeRender;
     private boolean searched;
@@ -166,10 +168,14 @@ public final class WalletHook extends XposedModule {
         }
         ComposeLayout layout = findComposeLayout(classes);
         installComposeCards(context, layout);
-        if (version != -1) {
+        boolean resolved = layout != null || count > 0;
+        if (version != -1 && resolved) {
             cache.edit().putLong("version", version).putString("compose", layout == null ? "NONE" : saveComposeLayout(layout))
                     .putString("legacy", String.join(";", legacyNames)).putLong("scan", requestedScan).commit();
             event("Hook map saved for Wallet " + version);
+        } else if (!resolved) {
+            cache.edit().remove("version").remove("compose").remove("legacy").remove("scan").commit();
+            failure("scan-empty", "No artwork hooks resolved for Wallet " + version + "; will rescan on next launch", null);
         }
         return count;
     }
@@ -231,13 +237,14 @@ public final class WalletHook extends XposedModule {
         return String.join("|", layout.cardConstructor.getParameterTypes()[0].getName(),
                 layout.cardConstructor.getDeclaringClass().getName(), layout.urlModel.getName(),
                 layout.bitmapConstructor.getDeclaringClass().getName(), layout.cardArt.getName(),
-                layout.url.getName(), layout.renderer.getDeclaringClass().getName(), layout.renderer.getName());
+                layout.url.getName(), layout.renderer.getDeclaringClass().getName(), layout.renderer.getName(),
+                Integer.toString(layout.renderer.getParameterTypes().length));
     }
 
     private ComposeLayout restoreComposeLayout(ClassLoader loader, String encoded) throws Exception {
         if ("NONE".equals(encoded)) return null;
         String[] fields = encoded.split("\\|", -1);
-        if (fields.length != 8) throw new IllegalArgumentException("Invalid Compose hook cache");
+        if (fields.length != 9) throw new IllegalArgumentException("Invalid Compose hook cache");
         Class<?> cardState = Class.forName(fields[0], false, loader);
         Class<?> keyedState = Class.forName(fields[1], false, loader);
         Class<?> urlModel = Class.forName(fields[2], false, loader);
@@ -248,13 +255,13 @@ public final class WalletHook extends XposedModule {
         Constructor<?> bitmapConstructor = bitmapModel.getDeclaredConstructor(Bitmap.class);
         Constructor<?> cardConstructor = keyedState.getDeclaredConstructor(cardState, Object.class);
         Class<?> rendererType = Class.forName(fields[6], false, loader);
+        int arity = Integer.parseInt(fields[8]);
         Method renderer = null;
         for (Method method : rendererType.getDeclaredMethods()) {
             Class<?>[] p = method.getParameterTypes();
             if (method.getName().equals(fields[7]) && Modifier.isStatic(method.getModifiers()) &&
-                    method.getReturnType() == Void.TYPE && p.length == 11 && p[0] == imageModel &&
-                    p[1] == String.class && p[5] == Float.TYPE && p[9] == Integer.TYPE &&
-                    p[10] == Integer.TYPE) { renderer = method; break; }
+                    method.getReturnType() == Void.TYPE && p.length == arity && p[0] == imageModel &&
+                    looseRenderer(method)) { renderer = method; break; }
         }
         if (renderer == null) throw new NoSuchMethodException("Saved Compose renderer");
         cardArt.setAccessible(true);
@@ -293,12 +300,7 @@ public final class WalletHook extends XposedModule {
                                 synchronized (loggedCardIds) {
                                     if (loggedCardIds.add(id)) Log.i(TAG, "Compose card discovered: " + id.substring(0, 8));
                                 }
-                                Bundle request = new Bundle();
-                                request.putString("id", id);
-                                request.putString("label", "Payment card");
-                                request.putString("stockUrl", source);
-                                try { context.getContentResolver().call(ArtProvider.URI, "discover", null, request); }
-                                catch (RuntimeException error) { failure("provider-discover", "Card list unavailable", error); }
+                                recordCard(context, id, "Payment card", source);
                             }
                         }
                         return chain.proceed();
@@ -348,29 +350,22 @@ public final class WalletHook extends XposedModule {
                 int instanceFields = 0;
                 int bitmapFields = 0;
                 int stringFields = 0;
-                int booleanFields = 0;
                 for (Field field : type.getDeclaredFields()) {
                     if (Modifier.isStatic(field.getModifiers())) continue;
                     instanceFields++;
                     if (field.getType() == Bitmap.class) bitmapFields++;
                     if (field.getType() == String.class) stringFields++;
-                    if (field.getType() == Boolean.TYPE) booleanFields++;
                 }
                 Class<?> parent = type.getSuperclass();
                 if (parent != null && parent != Object.class) {
                     if (instanceFields == 1 && bitmapFields == 1 && hasConstructor(type, Bitmap.class))
                         bitmapModels.add(type);
-                    if (instanceFields >= 3 && instanceFields <= 4 && stringFields == 2 &&
-                            hasUrlConstructor(type)) urlModels.add(type);
+                    if (stringFields >= 1 && hasUrlConstructor(type)) urlModels.add(type);
                 }
-                if (instanceFields >= 8 && instanceFields <= 10 && booleanFields == 3)
-                    cardStates.add(type);
-                if (instanceFields == 2) keyedStates.add(type);
+                if (instanceFields >= 5) cardStates.add(type);
+                if (instanceFields >= 2 && instanceFields <= 4) keyedStates.add(type);
                 for (Method method : type.getDeclaredMethods()) {
-                    Class<?>[] p = method.getParameterTypes();
-                    if (Modifier.isStatic(method.getModifiers()) && method.getReturnType() == Void.TYPE &&
-                            p.length == 11 && p[1] == String.class && p[5] == Float.TYPE &&
-                            p[9] == Integer.TYPE && p[10] == Integer.TYPE) renderers.add(method);
+                    if (looseRenderer(method)) renderers.add(method);
                 }
             } catch (Throwable ignored) { }
         }
@@ -414,17 +409,80 @@ public final class WalletHook extends XposedModule {
                 }
             }
         }
-        if (matches.size() != 1) {
-            Log.w(TAG, "Compose structure matches: " + matches.size());
+        if (matches.isEmpty()) {
+            Log.w(TAG, "Compose structure matches: 0");
             return null;
         }
-        ComposeLayout result = matches.get(0);
+        ComposeLayout result = null;
+        int bestScore = Integer.MIN_VALUE;
+        boolean tie = false;
+        for (ComposeLayout candidate : matches) {
+            int score = scoreLayout(candidate);
+            if (score > bestScore) {
+                bestScore = score;
+                result = candidate;
+                tie = false;
+            } else if (score == bestScore && result != null &&
+                    candidate.renderer.getDeclaringClass() != result.renderer.getDeclaringClass()) {
+                tie = true;
+            }
+        }
+        if (result == null || tie) {
+            Log.w(TAG, "Compose structure matches: " + matches.size() + ", best score " + bestScore + (tie ? " (ambiguous)" : ""));
+            return null;
+        }
+        Log.i(TAG, "Compose layout chosen from " + matches.size() + " candidate(s), score " + bestScore);
         result.cardArt.setAccessible(true);
         result.url.setAccessible(true);
         result.bitmapConstructor.setAccessible(true);
         result.cardConstructor.setAccessible(true);
         result.renderer.setAccessible(true);
         return result;
+    }
+
+    private boolean looseRenderer(Method method) {
+        if (!Modifier.isStatic(method.getModifiers()) || method.getReturnType() != Void.TYPE) return false;
+        Class<?>[] p = method.getParameterTypes();
+        if (p.length < 6 || p.length > 14) return false;
+        if (p[0].isPrimitive()) return false;
+        int strings = 0, floats = 0, ints = 0;
+        for (Class<?> type : p) {
+            if (type == String.class) strings++;
+            else if (type == Float.TYPE) floats++;
+            else if (type == Integer.TYPE) ints++;
+        }
+        return strings >= 1 && floats >= 1 && ints >= 2;
+    }
+
+    private int scoreLayout(ComposeLayout layout) {
+        int score = 0;
+        Class<?>[] p = layout.renderer.getParameterTypes();
+        if (p.length == 11 && p[1] == String.class && p[5] == Float.TYPE &&
+                p[9] == Integer.TYPE && p[10] == Integer.TYPE) score += 5;
+        else if (p.length >= 9 && p.length <= 13) score += 1;
+        int urlStrings = instanceFieldsOfType(layout.urlModel, String.class);
+        if (urlStrings == 2) score += 2;
+        int urlFields = instanceFieldCount(layout.urlModel);
+        if (urlFields >= 3 && urlFields <= 4) score += 1;
+        Class<?> cardState = layout.cardConstructor.getParameterTypes()[0];
+        if (instanceFieldsOfType(cardState, Boolean.TYPE) == 3) score += 2;
+        int stateFields = instanceFieldCount(cardState);
+        if (stateFields >= 8 && stateFields <= 10) score += 1;
+        if (instanceFieldCount(layout.cardConstructor.getDeclaringClass()) == 2) score += 1;
+        return score;
+    }
+
+    private int instanceFieldCount(Class<?> type) {
+        int count = 0;
+        for (Field field : type.getDeclaredFields()) if (!Modifier.isStatic(field.getModifiers())) count++;
+        return count;
+    }
+
+    private int instanceFieldsOfType(Class<?> type, Class<?> fieldType) {
+        int count = 0;
+        for (Field field : type.getDeclaredFields())
+            if (!Modifier.isStatic(field.getModifiers()) && field.getType() == fieldType) count++;
+        return count;
     }
 
     private boolean hasConstructor(Class<?> type, Class<?> parameter) {
@@ -435,7 +493,7 @@ public final class WalletHook extends XposedModule {
     private boolean hasUrlConstructor(Class<?> type) {
         for (Constructor<?> constructor : type.getDeclaredConstructors()) {
             Class<?>[] p = constructor.getParameterTypes();
-            if (p.length >= 3 && p[0] == String.class && p[1] == String.class) return true;
+            if (p.length >= 2 && p[0] == String.class) return true;
         }
         return false;
     }
@@ -443,7 +501,7 @@ public final class WalletHook extends XposedModule {
     private boolean hasCardConstructor(Class<?> type, Class<?> imageModel) {
         for (Constructor<?> constructor : type.getDeclaredConstructors()) {
             Class<?>[] p = constructor.getParameterTypes();
-            if (p.length >= 8 && p.length <= 9 && p[0] == imageModel) return true;
+            if (p.length >= 5 && p.length <= 12 && p[0] == imageModel) return true;
         }
         return false;
     }
@@ -485,10 +543,7 @@ public final class WalletHook extends XposedModule {
                                 ByteArrayOutputStream bytes = new ByteArrayOutputStream();
                                 stock.compress(Bitmap.CompressFormat.PNG, 100, bytes);
                                 stock.recycle();
-                                Bundle data = new Bundle();
-                                data.putString("id", id);
-                                data.putByteArray("image", bytes.toByteArray());
-                                context.getContentResolver().call(ArtProvider.URI, "stock", null, data);
+                                writeStock(context, id, bytes.toByteArray());
                                 capturedStock.add(id);
                             } catch (Throwable error) { Log.w(TAG, "Stock preview skipped", error); }
                         }
@@ -507,25 +562,6 @@ public final class WalletHook extends XposedModule {
     }
 
     private Bitmap loadArt(Context context, String id) {
-        if (android.os.SystemClock.elapsedRealtime() >= providerRetryAfter) try {
-            Bundle request = new Bundle();
-            request.putString("id", id);
-            Bundle answer = context.getContentResolver().call(ArtProvider.URI, "art", null, request);
-            String path = answer == null ? null : answer.getString("uri");
-            if (path != null) {
-                String key = id + ":provider:" + answer.getLong("revision");
-                Bitmap cached = bitmaps.get(key);
-                if (cached != null) return cached;
-                try (java.io.InputStream stream = context.getContentResolver().openInputStream(Uri.parse(path))) {
-                    Bitmap image = BitmapFactory.decodeStream(stream);
-                    if (image != null) bitmaps.put(key, image);
-                    return image;
-                }
-            }
-        } catch (Throwable error) {
-            providerRetryAfter = android.os.SystemClock.elapsedRealtime() + 5000;
-            failure("provider-art", "Direct artwork access unavailable; using LSPosed data", error);
-        }
         try {
             long revision = getRemotePreferences("art").getLong(id, -1);
             if (revision < 0) return null;
@@ -539,6 +575,54 @@ public final class WalletHook extends XposedModule {
             }
         } catch (Throwable error) { failure("remote-art", "LSPosed artwork unavailable", error); }
         return null;
+    }
+
+    private void recordCard(Context context, String id, String label, String stockUrl) {
+        String clean = label == null ? "" : label.replaceAll("[\\p{Cntrl}\t]", " ").trim();
+        String url = stockUrl == null ? "" : stockUrl.replaceAll("[\\p{Cntrl}\t]", "");
+        boolean changed;
+        synchronized (discovered) {
+            String[] previous = discovered.get(id);
+            changed = previous == null || !clean.equals(previous[0]) || !url.equals(previous[1]);
+            if (changed) discovered.put(id, new String[]{clean, url});
+        }
+        if (changed) writeRegistry(context);
+    }
+
+    private void writeRegistry(Context context) {
+        StringBuilder out = new StringBuilder();
+        synchronized (discovered) {
+            for (Map.Entry<String, String[]> entry : discovered.entrySet()) {
+                out.append(entry.getKey()).append('\t').append(entry.getValue()[0])
+                        .append('\t').append(entry.getValue()[1]).append('\n');
+            }
+        }
+        try {
+            File target = new File(context.getFilesDir(), "zetacard_cards.tsv");
+            File temp = new File(context.getFilesDir(), "zetacard_cards.tmp");
+            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(temp)) {
+                stream.write(out.toString().getBytes(StandardCharsets.UTF_8));
+                stream.getFD().sync();
+            }
+            if (!temp.renameTo(target)) {
+                try (java.io.FileOutputStream stream = new java.io.FileOutputStream(target)) {
+                    stream.write(out.toString().getBytes(StandardCharsets.UTF_8));
+                }
+                temp.delete();
+            }
+            target.setReadable(true, false);
+        } catch (Throwable error) { failure("registry", "Card registry write failed", error); }
+    }
+
+    private void writeStock(Context context, String id, byte[] png) {
+        try {
+            File target = new File(context.getFilesDir(), "zetacard_stock_" + id + ".png");
+            if (target.isFile()) return;
+            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(target)) {
+                stream.write(png);
+            }
+            target.setReadable(true, false);
+        } catch (Throwable error) { Log.w(TAG, "Stock preview write skipped", error); }
     }
 
     private void paint(Context context, Object[] args) throws Exception {
@@ -562,11 +646,7 @@ public final class WalletHook extends XposedModule {
             if (loggedCardIds.add(id)) Log.i(TAG, "Legacy card discovered: " + id.substring(0, 8));
         }
         synchronized (cardIds) { cardIds.put((Drawable) args[0], id); }
-        Bundle request = new Bundle();
-        request.putString("id", id);
-        request.putString("label", label);
-        try { context.getContentResolver().call(ArtProvider.URI, "discover", null, request); }
-        catch (RuntimeException error) { failure("provider-discover", "Card list unavailable", error); }
+        recordCard(context, id, label, null);
         Drawable card = (Drawable) args[0];
         Bitmap bitmap = loadArt(context, id);
         if (bitmap == null) {
