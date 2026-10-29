@@ -23,6 +23,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +34,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -41,7 +43,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
@@ -105,7 +106,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -124,6 +124,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 private const val CARD_RATIO = 700f / 440f
+private const val WALLET_PACKAGE = "com.google.android.apps.walletnfcrel"
 private val MASKED_CARD_SUFFIX = Regex("""^(.+?)\s+([•●·*]{1,4}\s*\d{4})$""")
 private data class CardItem(val id: String, val name: String, val stock: File, val custom: File)
 private data class CropRequest(val id: String, val image: Bitmap)
@@ -131,21 +132,23 @@ private enum class PhotoFit { CROP, STRETCH }
 
 class MainActivity : ComponentActivity() {
     private var refresh by mutableIntStateOf(0)
-    private var diagnostics by mutableStateOf<String?>(null)
+    private var logText by mutableStateOf<String?>(null)
     private var cropRequest by mutableStateOf<CropRequest?>(null)
     private var showWelcome by mutableStateOf(false)
     private var pickingId: String? = null
 
     private val logExport = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
         if (uri == null) return@registerForActivityResult
-        try {
-            contentResolver.openOutputStream(uri, "wt")?.bufferedWriter()?.use { it.write(exportText()) }
-                ?: error("Could not open the selected file")
-            DiagnosticsLog.info(this, "Logs exported")
-            toast("Logs exported")
-        } catch (error: Exception) {
-            DiagnosticsLog.warning(this, "Log export failed: ${error.javaClass.simpleName}")
-            toast(error.message ?: "Could not export logs")
+        thread(name = "ZetaCard log export") {
+            try {
+                contentResolver.openOutputStream(uri, "wt")?.bufferedWriter()?.use { it.write(exportText()) }
+                    ?: error("Could not open the selected file")
+                DiagnosticsLog.info(this, "Logs exported")
+                runOnUiThread { toast("Logs exported") }
+            } catch (error: Exception) {
+                DiagnosticsLog.warning(this, "Log export failed: ${error.javaClass.simpleName}")
+                runOnUiThread { toast(error.message ?: "Could not export logs") }
+            }
         }
     }
 
@@ -166,19 +169,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (savedInstanceState == null) DiagnosticsLog.clear(this)
+        if (savedInstanceState == null) {
+            DiagnosticsLog.clear(this)
+            RootBridge.resetLogState()
+        }
         DiagnosticsLog.info(this, "App opened")
         if (ZetaApplication.isConnected()) DiagnosticsLog.info(this, "LSPosed data service connected")
-        grantWalletAccess()
-        showWelcome = !ArtProvider.prefs(this).getBoolean("welcomed", false)
+        showWelcome = !ArtStore.prefs(this).getBoolean("welcomed", false)
         setContent {
             ZetaTheme {
                 if (showWelcome) {
                     WelcomeScreen(
-                        checkRoot = { RootImport.hasRoot() },
+                        checkRoot = { RootBridge.hasRoot() },
                         checkLsposed = { ZetaApplication.isConnected() },
                         onDone = {
-                            ArtProvider.prefs(this).edit().putBoolean("welcomed", true).apply()
+                            ArtStore.prefs(this).edit().putBoolean("welcomed", true).apply()
                             showWelcome = false
                             refresh++
                             importFromWallet()
@@ -191,11 +196,10 @@ class MainActivity : ComponentActivity() {
                     onRefresh = ::importFromWallet,
                     onOpenWallet = ::openWallet,
                     onOpenGitHub = ::openGitHub,
-                    onDetectHooks = ::detectHooks,
                     onShowLogs = ::showLogs,
                     onExportLogs = ::exportLogs,
-                    logs = diagnostics,
-                    onCloseLogs = { diagnostics = null },
+                    logs = logText,
+                    onCloseLogs = { logText = null },
                     onChoose = { id ->
                         pickingId = id
                         photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -213,8 +217,9 @@ class MainActivity : ComponentActivity() {
                                     val result = if (fit == PhotoFit.CROP) cropBitmap(request.image, zoom, pan, viewport)
                                         else stretchBitmap(request.image)
                                     saveImage(request.id, result)
-                                    ZetaApplication.syncArt(application as ZetaApplication, request.id)
+                                    val synced = ZetaApplication.syncArt(application as ZetaApplication, request.id)
                                     DiagnosticsLog.info(this, "Artwork saved: ${request.id.take(8)}")
+                                    if (synced) restartWallet()
                                     result.recycle()
                                     request.image.recycle()
                                     runOnUiThread { refresh++; toast("Artwork saved") }
@@ -230,27 +235,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); grantWalletAccess(); refresh++; importFromWallet() }
+    override fun onResume() { super.onResume(); refresh++; importFromWallet() }
 
     private fun importFromWallet() {
         thread(name = "ZetaCard root import") {
-            val added = RootImport.sync(this)
-            runOnUiThread { refresh++ }
-            if (added > 0) runOnUiThread { toast("Found $added card(s)") }
+            val added = RootBridge.sync(this)
+            runOnUiThread {
+                refresh++
+                if (added > 0) toast("Found $added card(s)")
+            }
         }
     }
 
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
 
-    private fun grantWalletAccess() {
-        try {
-            grantUriPermission("com.google.android.apps.walletnfcrel", ArtProvider.URI,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
-        } catch (_: IllegalArgumentException) { }
-    }
-
     private fun openWallet() {
-        val launch = packageManager.getLaunchIntentForPackage("com.google.android.apps.walletnfcrel")
+        val launch = packageManager.getLaunchIntentForPackage(WALLET_PACKAGE)
         if (launch != null) startActivity(launch) else toast("Google Wallet is not installed")
     }
 
@@ -258,19 +258,15 @@ class MainActivity : ComponentActivity() {
         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/hxfuxyy/ZetaCard")))
     }
 
-    private fun detectHooks() {
-        thread(name = "ZetaCard hook reset") {
-            val result = (application as ZetaApplication).requestHookScan()
-            runOnUiThread {
-                toast(result)
-                if (result.startsWith("Hook scan requested")) openWallet()
-            }
+    private fun showLogs() {
+        thread(name = "ZetaCard log reader") {
+            val text = "App events\n${DiagnosticsLog.read(this)}\n\nWallet module events\n${walletEventsText()}"
+            runOnUiThread { logText = text }
         }
     }
 
-    private fun showLogs() {
-        diagnostics = "Logs remain while ZetaCard is open or in the background. Closing and reopening it starts a new log. For Wallet hook events, export LSPosed logs.\n\n${DiagnosticsLog.read(this)}"
-    }
+    private fun walletEventsText(): String =
+        RootBridge.walletEvents() ?: "No Wallet module events yet. Open Google Wallet once with root granted to ZetaCard."
 
     private fun exportLogs() {
         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
@@ -282,33 +278,40 @@ class MainActivity : ComponentActivity() {
         fun version(packageName: String): String = try {
             packageManager.getPackageInfo(packageName, 0).versionName ?: "Unknown"
         } catch (_: Exception) { "Not installed or unavailable" }
-        return """ZetaCard diagnostics
+        return """ZetaCard logs
 Exported: $timestamp
 Device: ${Build.MANUFACTURER} ${Build.MODEL}
 Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})
 Firmware: ${Build.DISPLAY}
 Build ID: ${Build.ID}
 ZetaCard: ${version(packageName)}
-Google Wallet: ${version("com.google.android.apps.walletnfcrel")}
+Google Wallet: ${version(WALLET_PACKAGE)}
 
 App events
 ${DiagnosticsLog.read(this)}
 
-Wallet hook events are available in LSPosed logs.
+Wallet module events
+${walletEventsText()}
 """
     }
 
     private fun rename(id: String, name: String) {
-        ArtProvider.prefs(this).edit().putString("name.$id", name).apply()
+        ArtStore.prefs(this).edit().putString("name.$id", name).apply()
         refresh++
     }
 
     private fun restore(id: String) {
-        ArtProvider.file(this, id).delete()
+        ArtStore.file(this, id).delete()
         DiagnosticsLog.info(this, "Original artwork restored: ${id.take(8)}")
-        thread(name = "ZetaCard artwork remove") { ZetaApplication.syncArt(application as ZetaApplication, id) }
+        thread(name = "ZetaCard artwork remove") {
+            if (ZetaApplication.syncArt(application as ZetaApplication, id)) restartWallet()
+        }
         refresh++
         toast("Original artwork restored")
+    }
+
+    private fun restartWallet() {
+        if (RootBridge.restartWallet()) DiagnosticsLog.info(this, "Google Wallet restarted to apply artwork")
     }
 
     private fun decodePicked(uri: Uri): Bitmap {
@@ -323,7 +326,7 @@ Wallet hook events are available in LSPosed logs.
     }
 
     private fun saveImage(id: String, image: Bitmap) {
-        val target = ArtProvider.file(this, id)
+        val target = ArtStore.file(this, id)
         target.parentFile?.mkdirs()
         val temp = File(target.parentFile, "$id.tmp")
         FileOutputStream(temp).use { if (!image.compress(Bitmap.CompressFormat.PNG, 95, it)) error("Could not save image") }
@@ -333,7 +336,7 @@ Wallet hook events are available in LSPosed logs.
 
 @Composable
 private fun ZetaTheme(content: @Composable () -> Unit) {
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    val dark = isSystemInDarkTheme()
     val context = LocalContext.current
     val colors = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
@@ -357,7 +360,6 @@ private fun AppScreen(
     onRefresh: () -> Unit,
     onOpenWallet: () -> Unit,
     onOpenGitHub: () -> Unit,
-    onDetectHooks: () -> Unit,
     onShowLogs: () -> Unit,
     onExportLogs: () -> Unit,
     logs: String?,
@@ -368,9 +370,9 @@ private fun AppScreen(
 ) {
     val context = LocalContext.current
     val cards = remember(refresh) {
-        ArtProvider.ids(context).map { id ->
-            CardItem(id, ArtProvider.prefs(context).getString("name.$id", "Payment card") ?: "Payment card",
-                ArtProvider.stockFile(context, id), ArtProvider.file(context, id))
+        ArtStore.ids(context).map { id ->
+            CardItem(id, ArtStore.prefs(context).getString("name.$id", "Payment card") ?: "Payment card",
+                ArtStore.stockFile(context, id), ArtStore.file(context, id))
         }
     }
     var renaming by remember { mutableStateOf<CardItem?>(null) }
@@ -385,14 +387,7 @@ private fun AppScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(painterResource(R.drawable.zeta_toolbar_mark),
-                            contentDescription = null, modifier = Modifier.size(40.dp),
-                            tint = MaterialTheme.colorScheme.onSurface)
-                        Spacer(Modifier.width(11.dp))
-                        Text("ZetaCard", style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold)
-                    }
+                    Text("ZetaCard", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 },
                 actions = {
                     IconButton(onClick = onOpenWallet) { Icon(Icons.Outlined.Wallet, contentDescription = "Open Wallet") }
@@ -401,6 +396,18 @@ private fun AppScreen(
                     }
                 },
             )
+        },
+        bottomBar = {
+            Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("ZetaCard · v${context.packageManager.getPackageInfo(context.packageName, 0).versionName}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                Text("View logs", style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onShowLogs)
+                        .padding(horizontal = 6.dp, vertical = 6.dp))
+            }
         },
     ) { inner ->
         PullToRefreshBox(
@@ -434,35 +441,13 @@ private fun AppScreen(
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    Text("Your cards", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                    Text("Give every card a look that feels like yours.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    FilledTonalButton(onClick = onDetectHooks) { Text("Detect hooks") }
-                    OutlinedButton(onClick = onShowLogs) { Text("View logs") }
-                }
+                Text("Your cards", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
             }
             if (cards.isEmpty()) item { EmptyState(onOpenWallet) }
             items(cards, key = { it.id }) { card ->
                 CardEditor(card, refresh, onChoose = { onChoose(card.id) },
                     onRename = { renaming = card },
                     onRestore = { onRestore(card.id) }, onPreview = { title, file -> fullPreview = title to file })
-            }
-            item {
-                Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("ZetaCard · v${context.packageManager.getPackageInfo(context.packageName, 0).versionName}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("Artwork stays on this device. Your payment details remain in Wallet.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
             }
           }
         }
@@ -495,7 +480,7 @@ private fun AppScreen(
     if (logs != null) {
         AlertDialog(
             onDismissRequest = onCloseLogs,
-            title = { Text("Diagnostics") },
+            title = { Text("Logs") },
             text = { Text(logs, modifier = Modifier.height(380.dp).verticalScroll(rememberScrollState()),
                 style = MaterialTheme.typography.bodySmall) },
             confirmButton = {
@@ -644,8 +629,11 @@ private fun WelcomeScreen(checkRoot: () -> Boolean, checkLsposed: () -> Boolean,
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Spacer(Modifier.height(12.dp))
-            Image(painterResource(R.drawable.zeta_logo_color), contentDescription = null,
-                modifier = Modifier.size(72.dp).clip(RoundedCornerShape(18.dp)))
+            Box(Modifier.size(72.dp).clip(RoundedCornerShape(18.dp)).background(Color.Black),
+                contentAlignment = Alignment.Center) {
+                Icon(painterResource(R.drawable.zeta_toolbar_mark), contentDescription = null,
+                    tint = Color.White, modifier = Modifier.size(52.dp))
+            }
             Text("Welcome to ZetaCard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text("ZetaCard gives your Google Wallet cards custom artwork. It needs two things to work:",
                 style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)

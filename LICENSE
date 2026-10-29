@@ -1,16 +1,37 @@
-ZetaCard Source License 1.0
+ZetaCard Source License 2.0
 
-Copyright (c) 2026 hxfuxyy. All rights reserved.
+Copyright (c) 2026 hxfuxyy
+Original project: https://github.com/hxfuxyy/ZetaCard
 
-You may view this repository and fork it within GitHub as permitted by
-GitHub's Terms of Service. You may install and use unmodified APKs published
-by hxfuxyy for personal use.
+Permission is granted, free of charge, to any person obtaining a copy of this
+software and its source code (the "Software") to view, fork, copy, modify,
+extend and build the Software, and to publish modified versions of the source
+code and APKs built from it, subject to the following conditions:
 
-Except for those permissions and rights granted by applicable law or GitHub's
-Terms of Service, no permission is granted to copy source code into another
-project, modify or build the source code, redistribute source code or APKs,
-publish derivative works, sublicense, or sell this project without prior
-written permission from the copyright holder.
+1. Copyright and license. This copyright notice, the original project link and
+   this license must be kept in all copies and in all substantial portions of
+   the Software, including modified versions.
+
+2. Credit to the original author. Every fork or derivative work must state
+   prominently that it is based on ZetaCard by hxfuxyy and link to
+   https://github.com/hxfuxyy/ZetaCard. The statement must appear near the top
+   of the derivative's README or main description and, for distributed apps,
+   in the app's information, about or settings screen.
+
+3. Changes and identity. Modified versions must be clearly marked as modified
+   and must not claim that hxfuxyy wrote the changes, that the derivative is
+   an official ZetaCard release, or that hxfuxyy endorses it. Nobody other than
+   hxfuxyy may present themselves as the original author of ZetaCard.
+
+4. No sale. The Software and derivative works may not be sold, and access to
+   them may not be sold, without prior written permission from hxfuxyy.
 
 Third-party components and dependencies remain under their respective
 licenses. This license covers only the original ZetaCard material.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

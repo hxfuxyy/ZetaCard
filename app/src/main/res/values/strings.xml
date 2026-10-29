@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">ZetaCard</string>
-    <string name="module_description">Original Material 3 LSPosed module for custom Google Wallet card artwork</string>
+    <string name="module_description">Custom Google Wallet card artwork. Requires LSPosed and root.</string>
 </resources>

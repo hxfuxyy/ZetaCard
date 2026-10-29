@@ -6,10 +6,10 @@ import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
+import android.graphics.Rect;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
-import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 import android.util.LruCache;
@@ -21,6 +21,13 @@ import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.io.ByteArrayOutputStream;
+import java.io.FileOutputStream;
+import java.io.FileWriter;
+import java.nio.file.Files;
+import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.Locale;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashSet;
@@ -54,17 +61,7 @@ public final class WalletHook extends XposedModule {
     private boolean loggedComposeState;
     private boolean loggedComposeRender;
     private boolean searched;
-
-    @Override public boolean onHotReloading(XposedModuleInterface.HotReloadingParam param) {
-        return true;
-    }
-
-    @Override public void onHotReloaded(XposedModuleInterface.HotReloadedParam param) {
-        for (XposedInterface.HookHandle handle : param.getOldHookHandles()) handle.unhook();
-        Context context = currentApplication();
-        if (context != null) searchOnce(context, context.getClassLoader());
-        else failure("reload-context", "Wallet context unavailable after hook reload", null);
-    }
+    private volatile File eventsFile;
 
     @Override public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
         Log.i(TAG, "Loaded in " + param.getProcessName());
@@ -92,13 +89,69 @@ public final class WalletHook extends XposedModule {
     private synchronized void searchOnce(Context context, ClassLoader loader) {
         if (searched) return;
         searched = true;
+        eventsFile = new File(context.getFilesDir(), "zetacard_events.log");
+        event("Module loaded in Wallet " + walletVersion(context));
+        installDiskCacheHook(context);
         try { event("Artwork render hooks: " + install(context, loader)); }
         catch (Throwable error) { failure("scan", "Hook setup failed", error); }
+    }
+
+    private void installDiskCacheHook(Context context) {
+        try {
+            Method decode = BitmapFactory.class.getDeclaredMethod("decodeFile", String.class, BitmapFactory.Options.class);
+            hook(decode).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .setId("zetacard-disk-cache")
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            Object path = chain.getArgs().get(0);
+                            if (!(result instanceof Bitmap) || !(path instanceof String) ||
+                                    !((String) path).contains("image_manager_disk_cache")) return result;
+                            String name = new File((String) path).getName();
+                            int dot = name.indexOf('.');
+                            String id = dot > 0 ? name.substring(0, dot) : name;
+                            if (!ArtStore.valid(id)) return result;
+                            Bitmap custom = loadArt(context, id);
+                            if (custom == null) return result;
+                            Bitmap stock = (Bitmap) result;
+                            Bitmap art = Bitmap.createScaledBitmap(custom, stock.getWidth(), stock.getHeight(), true);
+                            BitmapFactory.Options options = (BitmapFactory.Options) chain.getArgs().get(1);
+                            boolean mutable = options != null && options.inMutable;
+                            if (art == custom || (mutable && !art.isMutable()))
+                                art = art.copy(art.getConfig() == null ? Bitmap.Config.ARGB_8888 : art.getConfig(), mutable);
+                            synchronized (loggedCustomIds) {
+                                if (loggedCustomIds.add("disk:" + id)) event("Cached artwork replaced: " + id.substring(0, 8));
+                            }
+                            return art;
+                        } catch (Throwable error) { failure("disk-art", "Cached artwork skipped", error); }
+                        return result;
+                    });
+        } catch (Throwable error) { failure("disk-hook", "Cached artwork hook unavailable", error); }
     }
 
     private void event(String message) {
         Log.i(TAG, message);
         try { log(Log.INFO, TAG, message); } catch (Throwable ignored) { }
+        record("INFO", message);
+    }
+
+    private void record(String level, String message) {
+        File file = eventsFile;
+        if (file == null) return;
+        synchronized (this) {
+            try {
+                if (file.length() > 64 * 1024) {
+                    byte[] all = Files.readAllBytes(file.toPath());
+                    int start = all.length - 32 * 1024;
+                    while (start < all.length && all[start] != '\n') start++;
+                    Files.write(file.toPath(), Arrays.copyOfRange(all, Math.min(start + 1, all.length), all.length));
+                }
+                String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date());
+                try (FileWriter writer = new FileWriter(file, true)) {
+                    writer.write(time + " " + level + " " + message.replaceAll("[\\r\\n\\t]+", " ") + "\n");
+                }
+            } catch (Throwable ignored) { }
+        }
     }
 
     private void failure(String key, String message, Throwable error) {
@@ -107,6 +160,7 @@ public final class WalletHook extends XposedModule {
                 (error.getMessage() == null ? "" : " - " + error.getMessage());
         Log.w(TAG, message + detail);
         try { log(Log.WARN, TAG, message + detail); } catch (Throwable ignored) { }
+        record("WARN", message + detail);
     }
 
     private Context currentApplication() {
@@ -119,12 +173,10 @@ public final class WalletHook extends XposedModule {
     private int install(Context context, ClassLoader loader) {
         SharedPreferences cache = context.getSharedPreferences("zetacard_hook_cache", Context.MODE_PRIVATE);
         long version = walletVersion(context);
-        long requestedScan = 0;
-        try { requestedScan = getRemotePreferences("control").getLong("scan", 0); }
-        catch (Throwable error) { failure("control", "LSPosed scan control unavailable", error); }
+        long module = moduleStamp();
         String savedCompose = cache.getString("compose", null);
         if (version != -1 && cache.getLong("version", -1) == version &&
-                cache.getLong("scan", 0) == requestedScan && savedCompose != null) {
+                cache.getLong("module", -1) == module && savedCompose != null) {
             try {
                 ComposeLayout layout = restoreComposeLayout(loader, savedCompose);
                 List<Method> legacy = restoreLegacyMethods(loader, cache.getString("legacy", ""));
@@ -171,13 +223,18 @@ public final class WalletHook extends XposedModule {
         boolean resolved = layout != null || count > 0;
         if (version != -1 && resolved) {
             cache.edit().putLong("version", version).putString("compose", layout == null ? "NONE" : saveComposeLayout(layout))
-                    .putString("legacy", String.join(";", legacyNames)).putLong("scan", requestedScan).commit();
+                    .putString("legacy", String.join(";", legacyNames)).putLong("module", module).commit();
             event("Hook map saved for Wallet " + version);
         } else if (!resolved) {
-            cache.edit().remove("version").remove("compose").remove("legacy").remove("scan").commit();
+            cache.edit().remove("version").remove("compose").remove("legacy").remove("module").commit();
             failure("scan-empty", "No artwork hooks resolved for Wallet " + version + "; will rescan on next launch", null);
         }
         return count;
+    }
+
+    private long moduleStamp() {
+        try { return new File(getModuleApplicationInfo().sourceDir).lastModified(); }
+        catch (Throwable ignored) { return -1; }
     }
 
     private long walletVersion(Context context) {
@@ -536,7 +593,7 @@ public final class WalletHook extends XposedModule {
                             try {
                                 Bitmap stock = Bitmap.createBitmap(700, 440, Bitmap.Config.ARGB_8888);
                                 Canvas canvas = new Canvas(stock);
-                                android.graphics.Rect old = current.getBounds();
+                                Rect old = current.getBounds();
                                 current.setBounds(0, 0, 700, 440);
                                 current.draw(canvas);
                                 current.setBounds(old);
@@ -600,17 +657,16 @@ public final class WalletHook extends XposedModule {
         try {
             File target = new File(context.getFilesDir(), "zetacard_cards.tsv");
             File temp = new File(context.getFilesDir(), "zetacard_cards.tmp");
-            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(temp)) {
+            try (FileOutputStream stream = new FileOutputStream(temp)) {
                 stream.write(out.toString().getBytes(StandardCharsets.UTF_8));
                 stream.getFD().sync();
             }
             if (!temp.renameTo(target)) {
-                try (java.io.FileOutputStream stream = new java.io.FileOutputStream(target)) {
+                try (FileOutputStream stream = new FileOutputStream(target)) {
                     stream.write(out.toString().getBytes(StandardCharsets.UTF_8));
                 }
                 temp.delete();
             }
-            target.setReadable(true, false);
         } catch (Throwable error) { failure("registry", "Card registry write failed", error); }
     }
 
@@ -618,10 +674,9 @@ public final class WalletHook extends XposedModule {
         try {
             File target = new File(context.getFilesDir(), "zetacard_stock_" + id + ".png");
             if (target.isFile()) return;
-            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(target)) {
+            try (FileOutputStream stream = new FileOutputStream(target)) {
                 stream.write(png);
             }
-            target.setReadable(true, false);
         } catch (Throwable error) { Log.w(TAG, "Stock preview write skipped", error); }
     }
 

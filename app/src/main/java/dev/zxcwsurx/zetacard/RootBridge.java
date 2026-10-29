@@ -10,36 +10,42 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 import javax.net.ssl.HttpsURLConnection;
 
-public final class RootImport {
-    private static final String WALLET_FILES = "/data/data/com.google.android.apps.walletnfcrel/files";
-    private static final String REGISTRY = WALLET_FILES + "/zetacard_cards.tsv";
+public final class RootBridge {
+    private static final String WALLET = "com.google.android.apps.walletnfcrel";
+    private static final String WALLET_FILES = "/data/data/" + WALLET + "/files";
+    private static final String[] SU_PATHS = {"su", "/system/bin/su", "/system/xbin/su", "/debug_ramdisk/su"};
+    private static volatile String[] shell;
+    private static boolean loggedNoRoot;
+    private static boolean loggedNoCards;
 
-    private RootImport() { }
+    private RootBridge() { }
 
     public static synchronized int sync(Context context) {
-        if (!rootAvailable()) {
-            DiagnosticsLog.warning(context, "Root unavailable: grant ZetaCard root in your root manager (KernelSU/Magisk)");
+        if (!hasRoot()) {
+            if (!loggedNoRoot) DiagnosticsLog.warning(context, "Root unavailable: grant ZetaCard root in your root manager");
+            loggedNoRoot = true;
             return 0;
         }
-        byte[] raw = run("cat " + REGISTRY);
-        if (raw == null || raw.length == 0) {
-            DiagnosticsLog.info(context, "Root OK but no card list yet: open Google Wallet and view your cards once");
+        String registry = text(run("cat " + WALLET_FILES + "/zetacard_cards.tsv"));
+        if (registry == null) {
+            if (!loggedNoCards) DiagnosticsLog.info(context, "No card list yet: open Google Wallet and view your cards once");
+            loggedNoCards = true;
             return 0;
         }
-        SharedPreferences prefs = ArtProvider.prefs(context);
+        SharedPreferences prefs = ArtStore.prefs(context);
         Set<String> ids = new HashSet<>(prefs.getStringSet("ids", Collections.emptySet()));
         SharedPreferences.Editor editor = prefs.edit();
         int added = 0;
-        for (String line : new String(raw, java.nio.charset.StandardCharsets.UTF_8).split("\n")) {
-            if (line.isEmpty()) continue;
+        for (String line : registry.split("\n")) {
             String[] parts = line.split("\t", -1);
             String id = parts[0].trim();
-            if (!ArtProvider.valid(id)) continue;
+            if (!ArtStore.valid(id)) continue;
             String label = parts.length > 1 ? parts[1].trim() : "";
             String stockUrl = parts.length > 2 ? parts[2].trim() : "";
             if (ids.add(id)) added++;
@@ -52,11 +58,28 @@ public final class RootImport {
         return added;
     }
 
+    public static String walletEvents() {
+        return text(run("tail -n 200 " + WALLET_FILES + "/zetacard_events.log"));
+    }
+
+    public static boolean restartWallet() {
+        return run("pids=$(pidof " + WALLET + ") && kill -9 $pids") != null;
+    }
+
+    public static boolean hasRoot() {
+        shell = null;
+        return shell() != null;
+    }
+
+    public static synchronized void resetLogState() {
+        loggedNoRoot = false;
+        loggedNoCards = false;
+    }
+
     private static void ensureStock(Context context, String id, String stockUrl) {
-        File target = ArtProvider.stockFile(context, id);
+        File target = ArtStore.stockFile(context, id);
         if (target.isFile()) return;
-        byte[] image = null;
-        if (!stockUrl.isEmpty()) image = download(stockUrl);
+        byte[] image = stockUrl.isEmpty() ? null : download(stockUrl);
         if (image == null) {
             byte[] encoded = run("base64 " + WALLET_FILES + "/zetacard_stock_" + id + ".png");
             if (encoded != null && encoded.length > 0) {
@@ -100,40 +123,47 @@ public final class RootImport {
         }
     }
 
-    public static boolean hasRoot() {
-        return rootAvailable();
+    private static String text(byte[] raw) {
+        if (raw == null) return null;
+        String value = new String(raw, StandardCharsets.UTF_8).trim();
+        return value.isEmpty() ? null : value;
     }
 
-    private static boolean rootAvailable() {
-        byte[] out = run("id -u");
-        if (out == null) return false;
-        return new String(out, java.nio.charset.StandardCharsets.UTF_8).trim().startsWith("0");
-    }
-
-    private static final String[] SU_PATHS = {"su", "/system/bin/su", "/system/xbin/su", "/debug_ramdisk/su"};
-
-    private static byte[] run(String command) {
+    private static String[] shell() {
+        String[] known = shell;
+        if (known != null) return known;
         for (String su : SU_PATHS) {
-            byte[] result = exec(new String[]{su, "-M", "-c", command});
-            if (result != null) return result;
-            result = exec(new String[]{su, "-c", command});
-            if (result != null) return result;
+            for (String[] candidate : new String[][]{{su, "-M", "-c"}, {su, "-c"}}) {
+                String id = text(exec(candidate, "id -u"));
+                if ("0".equals(id)) {
+                    shell = candidate;
+                    return candidate;
+                }
+            }
         }
         return null;
     }
 
-    private static byte[] exec(String[] argv) {
+    private static byte[] run(String command) {
+        String[] prefix = shell();
+        return prefix == null ? null : exec(prefix, command);
+    }
+
+    private static byte[] exec(String[] prefix, String command) {
+        String[] argv = new String[prefix.length + 1];
+        System.arraycopy(prefix, 0, argv, 0, prefix.length);
+        argv[prefix.length] = command;
         Process process = null;
         try {
-            process = new ProcessBuilder(argv).redirectErrorStream(false).start();
+            process = new ProcessBuilder(argv).start();
+            process.getOutputStream().close();
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             try (InputStream in = process.getInputStream()) {
                 byte[] buffer = new byte[8192];
                 int size;
                 while ((size = in.read(buffer)) != -1) out.write(buffer, 0, size);
             }
-            process.waitFor();
-            return process.exitValue() == 0 ? out.toByteArray() : null;
+            return process.waitFor() == 0 ? out.toByteArray() : null;
         } catch (Exception ignored) {
             return null;
         } finally {

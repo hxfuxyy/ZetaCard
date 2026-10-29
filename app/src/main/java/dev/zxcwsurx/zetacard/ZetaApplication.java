@@ -2,11 +2,8 @@ package dev.zxcwsurx.zetacard;
 
 import android.app.Application;
 import android.os.ParcelFileDescriptor;
-import android.os.Bundle;
-import android.os.SystemClock;
 import io.github.libxposed.service.XposedService;
 import io.github.libxposed.service.XposedServiceHelper;
-import io.github.libxposed.service.HookedTarget;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -17,7 +14,6 @@ public final class ZetaApplication extends Application implements XposedServiceH
     @Override public void onCreate() {
         super.onCreate();
         DiagnosticsLog.info(this, "App service starting");
-        GrantReceiver.grant(this);
         XposedServiceHelper.registerListener(this);
     }
 
@@ -34,43 +30,14 @@ public final class ZetaApplication extends Application implements XposedServiceH
 
     static boolean isConnected() { return service != null; }
 
-    String requestHookScan() {
+    static boolean syncArt(Application context, String id) {
         XposedService connected = service;
-        if (connected == null) {
-            DiagnosticsLog.warning(this, "Hook scan unavailable: LSPosed service disconnected");
-            return "LSPosed data service is not connected";
-        }
-        try {
-            long scan = SystemClock.elapsedRealtime();
-            if (!connected.getRemotePreferences("control").edit().putLong("scan", scan).commit()) {
-                DiagnosticsLog.warning(this, "Could not request a new hook scan");
-                return "Could not request a new hook scan";
-            }
-            int reloads = 0;
-            for (HookedTarget target : connected.getRunningTargets()) {
-                if (!target.getProcessName().startsWith("com.google.android.apps.walletnfcrel")) continue;
-                connected.hotReloadModule(target, new Bundle(), (changed, result) ->
-                        DiagnosticsLog.info(this, "Wallet hook reload: " + result.status() + " " + result.message()));
-                reloads++;
-            }
-            DiagnosticsLog.info(this, "Hook scan requested: " + scan + ", reloading " + reloads + " Wallet processes");
-            return reloads == 0 ? "Hook scan requested. Open Wallet to run it." :
-                    "Hook scan requested. Open Wallet to see the result.";
-        } catch (Exception error) {
-            DiagnosticsLog.warning(this, "Hook scan request failed: " + error.getClass().getSimpleName() + ": " + error.getMessage());
-            return "Could not start hook scan: " + error.getClass().getSimpleName();
-        }
-    }
-
-    static void syncArt(Application context, String id) {
-        XposedService connected = service;
-        if (connected == null || !ArtProvider.valid(id)) return;
-        File image = ArtProvider.file(context, id);
+        if (connected == null || !ArtStore.valid(id)) return false;
+        File image = ArtStore.file(context, id);
         try {
             if (!image.isFile()) {
                 connected.deleteRemoteFile("art_" + id);
-                connected.getRemotePreferences("art").edit().remove(id).commit();
-                return;
+                return connected.getRemotePreferences("art").edit().remove(id).commit();
             }
             try (ParcelFileDescriptor remote = connected.openRemoteFile("art_" + id);
                  FileInputStream input = new FileInputStream(image);
@@ -81,10 +48,12 @@ public final class ZetaApplication extends Application implements XposedServiceH
                 while ((length = input.read(buffer)) != -1) output.write(buffer, 0, length);
                 output.getFD().sync();
             }
-            connected.getRemotePreferences("art").edit().putLong(id, image.lastModified()).commit();
-            DiagnosticsLog.info(context, "Artwork synced to LSPosed: " + id.substring(0, 8));
+            boolean saved = connected.getRemotePreferences("art").edit().putLong(id, image.lastModified()).commit();
+            if (saved) DiagnosticsLog.info(context, "Artwork synced to LSPosed: " + id.substring(0, 8));
+            return saved;
         } catch (Exception error) {
             DiagnosticsLog.warning(context, "Artwork sync failed: " + error.getClass().getSimpleName() + ": " + error.getMessage());
+            return false;
         }
     }
 
@@ -99,9 +68,9 @@ public final class ZetaApplication extends Application implements XposedServiceH
         if (connected == null) return;
         try {
             for (String name : connected.listRemoteFiles()) {
-                if (!name.startsWith("art_") || !ArtProvider.valid(name.substring(4))) continue;
+                if (!name.startsWith("art_") || !ArtStore.valid(name.substring(4))) continue;
                 String id = name.substring(4);
-                if (!ArtProvider.file(this, id).isFile()) syncArt(this, id);
+                if (!ArtStore.file(this, id).isFile()) syncArt(this, id);
             }
         } catch (Exception error) {
             DiagnosticsLog.warning(this, "Could not clean old LSPosed artwork: " + error.getMessage());
