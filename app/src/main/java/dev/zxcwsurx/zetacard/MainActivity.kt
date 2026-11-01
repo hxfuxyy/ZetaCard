@@ -266,7 +266,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun walletEventsText(): String =
-        RootBridge.walletEvents() ?: "No Wallet module events yet. Open Google Wallet once with root granted to ZetaCard."
+        RootBridge.walletEvents() ?: "No Wallet module events yet. Open Google Wallet once with root granted to ZetaCard. If this stays empty, LSPosed is not loaded into Wallet: turn off Umount modules / DenyList for Wallet in your root manager."
 
     private fun exportLogs() {
         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
@@ -506,7 +506,7 @@ private fun EmptyState(onOpenWallet: () -> Unit) {
             Icon(Icons.Outlined.Wallet, contentDescription = null, modifier = Modifier.size(34.dp),
                 tint = MaterialTheme.colorScheme.primary)
             Text("No cards found yet", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-            Text("Enable ZetaCard for Google Wallet in LSPosed, then open Wallet once.",
+            Text("Enable ZetaCard for Google Wallet in LSPosed, turn off Umount modules / DenyList for Wallet in your root manager, then open Wallet once.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Button(onClick = onOpenWallet) { Text("Open Google Wallet") }
         }

@@ -21,6 +21,7 @@ The module changes artwork in the Wallet user interface. It does not edit paymen
 
 1. Install the APK.
 2. Enable ZetaCard in LSPosed or Vector with `com.google.android.apps.walletnfcrel` in scope.
+   If your root manager hides modules from apps (KernelSU / SukiSU **Umount modules**, Magisk DenyList, Zygisk Next enforced denylist), turn that off for Google Wallet, otherwise LSPosed is never loaded into Wallet. Keep it on for Google Play services and the Play Store. KernelSU stores this per UID, so after reinstalling Wallet open its profile and save it again.
 3. Open ZetaCard. The welcome screen checks root and LSPosed access; allow ZetaCard when your root manager (KernelSU, Magisk, or similar) asks.
 4. Force stop and reopen Google Wallet and view your cards once.
 5. Return to ZetaCard. Your cards appear with previews of their original artwork. Choose and crop an image for a card, then reopen Wallet.
