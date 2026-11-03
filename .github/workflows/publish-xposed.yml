@@ -1,0 +1,83 @@
+name: Publish to Xposed Modules Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: GitHub Release tag of this repository to publish, for example v1.5
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-xposed
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish released APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TAG: ${{ inputs.tag }}
+      XPOSED_REPO: Xposed-Modules-Repo/io.github.hxfuxyy.zetacard
+    steps:
+      - name: Check token
+        id: token
+        env:
+          XPOSED_TOKEN: ${{ secrets.XPOSED_REPO_TOKEN }}
+        run: |
+          if [[ -z "$XPOSED_TOKEN" ]]; then
+            echo "::notice::XPOSED_REPO_TOKEN is not set. Add it and run this workflow again with tag $TAG."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download and verify the released APK
+        if: steps.token.outputs.available == 'true'
+        id: asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$TAG" =~ ^(v[0-9][0-9A-Za-z.-]*|[0-9]+-[0-9][0-9A-Za-z.-]*)$ ]] || { echo "::error::Invalid tag '$TAG'"; exit 1; }
+          mkdir dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist --pattern 'ZetaCard-*.apk' --pattern 'ZetaCard-*.apk.sha256'
+          apk="$(find dist -name 'ZetaCard-*.apk' | head -1)"
+          [[ -n "$apk" ]] || { echo "::error::Release $TAG has no ZetaCard APK"; exit 1; }
+          (cd dist && sha256sum --check --strict "$(basename "$apk").sha256")
+          name="$(basename "$apk" .apk)"
+          name="${name#ZetaCard-}"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > dist/notes.md
+          {
+            echo "apk=$apk"
+            echo "name=$name"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.available == 'true'
+        with:
+          ref: ${{ inputs.tag }}
+          sparse-checkout: version.properties
+          path: source
+
+      - name: Publish
+        if: steps.token.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.XPOSED_REPO_TOKEN }}
+          APK: ${{ steps.asset.outputs.apk }}
+          NAME: ${{ steps.asset.outputs.name }}
+        run: |
+          code="$(grep '^versionCode=' source/version.properties | cut -d= -f2 | tr -d '[:space:]')"
+          [[ "$code" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid versionCode '$code'"; exit 1; }
+          target="$code-$NAME"
+          if gh release view "$target" --repo "$XPOSED_REPO" >/dev/null 2>&1; then
+            if gh release view "$target" --repo "$XPOSED_REPO" --json assets --jq '.assets[].name' | grep -qx "$(basename "$APK")"; then
+              echo "::notice::$XPOSED_REPO already has $target with the APK."
+              exit 0
+            fi
+            gh release upload "$target" "$APK" --repo "$XPOSED_REPO"
+          else
+            gh release create "$target" "$APK" --repo "$XPOSED_REPO" --title "$NAME" --notes-file dist/notes.md
+          fi

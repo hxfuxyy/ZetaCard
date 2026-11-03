@@ -1,5 +1,4 @@
 name=ZetaCard
 description=Custom Google Wallet card artwork. Requires LSPosed and root.
-version=1.4
 minApiVersion=102
 targetApiVersion=102

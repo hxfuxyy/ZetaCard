@@ -1,36 +1,78 @@
 plugins {
-    id 'com.android.application'
-    id 'org.jetbrains.kotlin.plugin.compose'
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
 }
+
+def versionProperties = new Properties()
+rootProject.file('version.properties').withInputStream { versionProperties.load(it) }
+def appVersionName = versionProperties.getProperty('versionName')
+def appVersionCode = versionProperties.getProperty('versionCode').toInteger()
+def versionSuffix = (project.findProperty('versionSuffix') ?: '').toString()
+if (!(versionSuffix ==~ '[A-Za-z0-9.+-]*')) throw new GradleException("Invalid versionSuffix: $versionSuffix")
+
+def signingProperties = new Properties()
+def signingFile = rootProject.file('keystore.properties')
+if (signingFile.isFile()) signingFile.withInputStream { signingProperties.load(it) }
+def signingValue = { String env, String key -> System.getenv(env) ?: signingProperties.getProperty(key) }
+def releaseStoreFile = signingValue('ZETACARD_KEYSTORE_FILE', 'storeFile')
+def releaseSigningAvailable = releaseStoreFile != null && !releaseStoreFile.isEmpty()
+
 android {
-    namespace 'dev.zxcwsurx.zetacard'
+    namespace 'io.github.hxfuxyy.zetacard'
     compileSdk 37
     defaultConfig {
-        applicationId 'dev.zxcwsurx.zetacard'
+        applicationId 'io.github.hxfuxyy.zetacard'
         minSdk 29
         targetSdk 35
-        versionCode = (project.findProperty('appVersionCode') ?: '140').toString().toInteger()
-        versionName = (project.findProperty('appVersionName') ?: '1.4').toString()
+        versionCode = appVersionCode
+        versionName = appVersionName + versionSuffix
+    }
+    signingConfigs {
+        release {
+            if (releaseSigningAvailable) {
+                storeFile = rootProject.file(releaseStoreFile)
+                storePassword = signingValue('ZETACARD_KEYSTORE_PASSWORD', 'storePassword')
+                keyAlias = signingValue('ZETACARD_KEY_ALIAS', 'keyAlias')
+                keyPassword = signingValue('ZETACARD_KEY_PASSWORD', 'keyPassword')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (releaseSigningAvailable) signingConfig = signingConfigs.release
+        }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    buildFeatures { compose true }
+    buildFeatures {
+        compose true
+        buildConfig true
+    }
     packaging {
         dex {
             useLegacyPackaging = true
         }
     }
+    lint {
+        abortOnError = true
+        checkReleaseBuilds = false
+        disable.add('ExpiredTargetSdkVersion')
+        disable.add('OldTargetApi')
+    }
 }
+
 dependencies {
-    compileOnly 'io.github.libxposed:api:102.0.0'
-    implementation 'io.github.libxposed:service:102.0.0'
-    implementation platform('androidx.compose:compose-bom:2026.09.00')
-    implementation 'androidx.activity:activity-compose:1.11.0'
-    implementation 'androidx.compose.ui:ui'
-    implementation 'androidx.compose.foundation:foundation'
-    implementation 'androidx.compose.material3:material3:1.5.0-alpha29'
-    implementation 'androidx.compose.material:material-icons-extended'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2'
+    compileOnly libs.libxposed.api
+    implementation libs.libxposed.service
+    implementation platform(libs.androidx.compose.bom)
+    implementation libs.androidx.activity.compose
+    implementation libs.androidx.compose.ui
+    implementation libs.androidx.compose.foundation
+    implementation libs.androidx.compose.material3
+    implementation libs.androidx.compose.material.icons.extended
+    implementation libs.androidx.lifecycle.viewmodel.ktx
+    implementation libs.kotlinx.coroutines.android
+    testImplementation libs.junit
 }

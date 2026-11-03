@@ -1,0 +1,184 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - '[0-9]*-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build signed release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read and validate version
+        id: version
+        run: |
+          name="$(grep '^versionName=' version.properties | cut -d= -f2 | tr -d '[:space:]')"
+          code="$(grep '^versionCode=' version.properties | cut -d= -f2 | tr -d '[:space:]')"
+          [[ "$name" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::Invalid versionName '$name'"; exit 1; }
+          [[ "$code" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid versionCode '$code'"; exit 1; }
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="$GITHUB_REF_NAME"
+            if [[ "$tag" != "v$name" && "$tag" != "$code-$name" ]]; then
+              echo "::error::Tag '$tag' does not match version.properties (expected v$name or $code-$name)"
+              exit 1
+            fi
+          else
+            tag="v$name"
+          fi
+          for existing in "v$name" "$code-$name"; do
+            if gh release view "$existing" >/dev/null 2>&1; then
+              echo "::error::Release $existing already exists for this version. Bump version.properties before releasing again."
+              exit 1
+            fi
+          done
+          prerelease=false
+          [[ "$name" == *-* ]] && prerelease=true
+          {
+            echo "name=$name"
+            echo "code=$code"
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check signing secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ZETACARD_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ZETACARD_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ZETACARD_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ZETACARD_KEY_PASSWORD }}
+        run: |
+          missing=()
+          [[ -n "$KEYSTORE_BASE64" ]] || missing+=(ZETACARD_KEYSTORE_BASE64)
+          [[ -n "$KEYSTORE_PASSWORD" ]] || missing+=(ZETACARD_KEYSTORE_PASSWORD)
+          [[ -n "$KEY_ALIAS" ]] || missing+=(ZETACARD_KEY_ALIAS)
+          [[ -n "$KEY_PASSWORD" ]] || missing+=(ZETACARD_KEY_PASSWORD)
+          if (( ${#missing[@]} )); then
+            echo "::error::Missing repository secrets: ${missing[*]}. See docs/RELEASING.md."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v4
+
+      - name: Install Android platform
+        run: |
+          sdkmanager 'platforms;android-37.0'
+          if [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37"
+          fi
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      - name: Test and build release APK
+        env:
+          ZETACARD_KEYSTORE_FILE: ${{ runner.temp }}/release.jks
+          ZETACARD_KEYSTORE_PASSWORD: ${{ secrets.ZETACARD_KEYSTORE_PASSWORD }}
+          ZETACARD_KEY_ALIAS: ${{ secrets.ZETACARD_KEY_ALIAS }}
+          ZETACARD_KEY_PASSWORD: ${{ secrets.ZETACARD_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon testDebugUnitTest assembleRelease
+
+      - name: Verify alignment and signature
+        id: verify
+        env:
+          EXPECTED_CERT_SHA256: ${{ vars.ZETACARD_CERT_SHA256 }}
+        run: |
+          apk=app/build/outputs/apk/release/app-release.apk
+          [[ -f "$apk" ]] || { echo "::error::Signed release APK was not produced"; exit 1; }
+          tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          "$tools/zipalign" -c -P 16 4 "$apk"
+          "$tools/apksigner" verify --verbose "$apk"
+          cert="$("$tools/apksigner" verify --print-certs "$apk" | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')"
+          [[ -n "$cert" ]] || { echo "::error::Could not read the signing certificate"; exit 1; }
+          expected="${EXPECTED_CERT_SHA256//:/}"
+          expected="${expected// /}"
+          if [[ -n "$expected" && "${cert,,}" != "${expected,,}" ]]; then
+            echo "::error::APK was signed with an unexpected certificate ($cert)"
+            exit 1
+          fi
+          echo "cert=$cert" >> "$GITHUB_OUTPUT"
+
+      - name: Remove keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
+
+      - name: Prepare assets and notes
+        env:
+          NAME: ${{ steps.version.outputs.name }}
+          CODE: ${{ steps.version.outputs.code }}
+          CERT: ${{ steps.verify.outputs.cert }}
+        run: |
+          mkdir -p dist
+          apk="ZetaCard-$NAME.apk"
+          cp app/build/outputs/apk/release/app-release.apk "dist/$apk"
+          (cd dist && sha256sum "$apk" > "$apk.sha256")
+          awk -v version="$NAME" '
+            $0 ~ "^## \\[" version "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > dist/changes.md
+          [[ -s dist/changes.md ]] || echo "See CHANGELOG.md for details." > dist/changes.md
+          {
+            echo "## ZetaCard $NAME (version code $CODE)"
+            echo
+            cat dist/changes.md
+            echo
+            echo "### Requirements"
+            echo
+            echo "- Android 10 or newer, Google Wallet"
+            echo "- LSPosed or Vector with libxposed API 102"
+            echo "- Root access granted to ZetaCard"
+            echo
+            echo "### Installation"
+            echo
+            echo "Install the APK, enable ZetaCard in LSPosed with Google Wallet in scope, then force stop and reopen Wallet."
+            echo
+            echo "### Verification"
+            echo
+            echo "- APK SHA-256: \`$(cut -d' ' -f1 "dist/$apk.sha256")\`"
+            echo "- Signing certificate SHA-256: \`$CERT\`"
+          } > dist/notes.md
+
+      - name: Publish GitHub Release
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          NAME: ${{ steps.version.outputs.name }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          args=(--title "ZetaCard $NAME" --notes-file dist/notes.md)
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then args+=(--verify-tag); else args+=(--target "$GITHUB_SHA"); fi
+          if [[ "$PRERELEASE" == "true" ]]; then args+=(--prerelease --latest=false); fi
+          gh release create "$TAG" "dist/ZetaCard-$NAME.apk" "dist/ZetaCard-$NAME.apk.sha256" "${args[@]}"
+
+      - name: Start Xposed Modules Repository publication
+        if: steps.version.outputs.prerelease == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh workflow run publish-xposed.yml --ref "$GITHUB_REF_NAME" -f tag="$TAG" || echo "::warning::Could not start publish-xposed.yml; run it manually for $TAG."
