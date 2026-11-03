@@ -1,5 +1,5 @@
 [versions]
-agp = "9.1.1"
+agp = "9.5.0"
 kotlin = "2.2.10"
 libxposed = "102.0.0"
 compose-bom = "2026.09.00"
