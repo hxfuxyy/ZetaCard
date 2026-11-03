@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a problem with ZetaCard or the module inside Google Wallet.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please search existing issues first. Report security problems privately as described in SECURITY.md.
+  - type: input
+    id: zetacard-version
+    attributes:
+      label: ZetaCard version
+      description: Shown in ⋮ → About ZetaCard.
+      placeholder: "1.5 (150)"
+    validations:
+      required: true
+  - type: input
+    id: wallet-version
+    attributes:
+      label: Google Wallet version
+      description: Settings → Apps → Google Wallet, or the exported log.
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and Android version
+      placeholder: "Pixel 8, Android 16"
+    validations:
+      required: true
+  - type: input
+    id: framework
+    attributes:
+      label: Root and framework
+      placeholder: "KernelSU 1.0, LSPosed 1.10"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Include the steps that lead to the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Export logs from ⋮ → View logs → Export and attach the file or paste it here. Review it first; it lists your device model and app versions.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: ZetaCard is enabled in LSPosed with Google Wallet in scope.
+          required: true
+        - label: I force stopped and reopened Google Wallet after enabling the module.
+          required: true
