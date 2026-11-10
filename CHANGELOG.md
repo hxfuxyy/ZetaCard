@@ -4,6 +4,47 @@ All notable changes to ZetaCard are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [1.6]
+
+### Added
+
+- Six built-in Zeta designs (Violet, Midnight, Aurora, Ocean, Holo, Pearl) that fit the card exactly and apply with one tap.
+- Backup and restore of all designs, card names and caption settings in a single ZIP file. Restoring validates every entry before anything changes.
+- Optional card name on the design, drawn in the top corner so it never covers the Zeta wordmark. The module inside Wallet and the app preview draw it with the same code, and turning it off keeps the original image untouched.
+- Brightness and shade controls in the photo editor, saved exactly as previewed.
+- 18 languages: English, Ukrainian, Russian, Spanish, Portuguese (Brazil), French, German, Italian, Polish, Turkish, Vietnamese, Indonesian, Japanese, Korean, Chinese (Simplified and Traditional), Hindi and Arabic, with right-to-left layout for Arabic.
+- In-app language picker under **⋮ → Language**. On Android 13 and newer the choice also appears in the system's per-app language settings.
+- Automatic card scan: when no cards are known yet (at most every six hours) or when pull to refresh finds nothing new, ZetaCard opens Google Wallet for a moment, waits until the cards are rendered and returns on its own. The scan uses a single root call, so root managers that show a toast per request stay quiet.
+- New About screen with the animated Zeta card, version, author and quick links to the source code, releases, issue reporting and the license.
+- Version badge next to the app name.
+- Haptic feedback for taps, the preview switch, caption toggles, pull to refresh and for successful or failed actions. It follows the system touch feedback setting.
+- Detailed diagnostics in **View logs** and the exported file: device and firmware, root manager, LSPosed framework and API, whether Wallet is in the module scope, Wallet version, per-card status and the Wallet hook cache.
+- Crashes are recorded in the log with a readable stack trace, and logs are kept across app restarts.
+- Setup guidance for root managers that unmount modules for Google Wallet.
+- Publishing to the Xposed Modules Repository: stable releases and the module page are kept in sync automatically.
+
+### Changed
+
+- Redesigned card editor: one large preview with an animated Original / Your design switch and a design picker sheet.
+- Smoother animations throughout: staggered entrances, press feedback, animated status chips and counters, and a cross-fade from setup to the card list.
+- Setup can no longer be skipped. Continue unlocks once root is granted, the LSPosed module is active and Google Wallet is in the module scope; the status updates live.
+- Pull to refresh scans Google Wallet when no new cards are found and always reports the result.
+- Messages appear as short Android toasts.
+- The default card name and all messages follow the app language.
+- New launcher icon based on the card-shaped Zeta logo, with a themed icon on Android 13 and newer.
+
+### Fixed
+
+- After the LSPosed service connected late, cards kept showing "waiting for LSPosed" until the app was reopened.
+- Inside Wallet, a design that could not be read once stayed on the original artwork until Wallet restarted; it is now retried after a short pause.
+- Ripple effects on rounded previews spilled outside the corners.
+
+### Upgrade notes
+
+- **From 1.5:** install 1.6 over the existing app. Your designs and settings are kept.
+- **From 1.4 or older:** install 1.6 next to the old app and open it once with root; your designs are copied automatically. Then uninstall the old app and enable the new module in LSPosed.
+- After installing, force stop Google Wallet and open it again.
+
 ## [1.5]
 
 ### Fixed
@@ -59,6 +100,7 @@ All notable changes to ZetaCard are documented in this file. The format is based
 
 Releases up to and including 1.4 were published as debug-signed APKs by the previous workflow. See [GitHub Releases](https://github.com/hxfuxyy/ZetaCard/releases) for their notes.
 
-[Unreleased]: https://github.com/hxfuxyy/ZetaCard/compare/v1.5...HEAD
+[Unreleased]: https://github.com/hxfuxyy/ZetaCard/compare/v1.6...HEAD
+[1.6]: https://github.com/hxfuxyy/ZetaCard/compare/v1.5...v1.6
 [1.5]: https://github.com/hxfuxyy/ZetaCard/compare/v1.4...v1.5
 [1.4]: https://github.com/hxfuxyy/ZetaCard/releases/tag/v1.4

@@ -11,10 +11,13 @@ data class CardItem(
     val stockRevision: Long,
     val customRevision: Long,
     val syncedRevision: Long = -1,
+    val captionEnabled: Boolean = false,
+    val caption: String? = null,
+    val syncedCaption: String? = null,
 ) {
     val syncState: SyncState
         get() = when {
-            hasCustom && syncedRevision == customRevision -> SyncState.APPLIED
+            hasCustom && syncedRevision == customRevision && syncedCaption == caption -> SyncState.APPLIED
             hasCustom -> SyncState.PENDING_APPLY
             syncedRevision >= 0 -> SyncState.PENDING_RESTORE
             else -> SyncState.ORIGINAL

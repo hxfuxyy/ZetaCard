@@ -55,4 +55,16 @@ class LogSanitizerTest {
         assertTrue(trimmed.endsWith("line 100\n"))
         assertEquals("short\n", LogSanitizer.trimToLastLines("short\n", 60))
     }
+
+    @Test
+    fun stackTracesAreReadableAndBounded() {
+        val cause = IllegalStateException("token https://example.com/secret")
+        val error = RuntimeException("outer", cause)
+        val trace = LogSanitizer.stackTrace(error, 3)
+        assertTrue(trace.startsWith("  RuntimeException: outer"))
+        assertTrue(trace.contains("caused by IllegalStateException: token <url>"))
+        assertFalse(trace.contains("example.com"))
+        assertTrue(trace.lines().count { it.trimStart().startsWith("at ") } <= 3 + 3)
+        assertEquals("", LogSanitizer.stackTrace(null, 5))
+    }
 }

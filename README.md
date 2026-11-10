@@ -1,38 +1,39 @@
 <div align="center">
 
-<img src="docs/assets/icon.png" alt="ZetaCard icon" width="112" height="112">
-
-# ZetaCard
-
-Customize Google Wallet card artwork with a modern Material 3 LSPosed module for Android.
+<img src="docs/assets/banner.png" alt="ZetaCard: custom artwork for your Google Wallet cards" width="100%">
 
 [![CI](https://github.com/hxfuxyy/ZetaCard/actions/workflows/ci.yml/badge.svg)](https://github.com/hxfuxyy/ZetaCard/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/hxfuxyy/ZetaCard?label=release)](https://github.com/hxfuxyy/ZetaCard/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/hxfuxyy/ZetaCard/total?label=downloads)](https://github.com/hxfuxyy/ZetaCard/releases)
 [![Android 10+](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)](#requirements)
 [![License](https://img.shields.io/badge/license-ZetaCard%20Source%20License%202.0-blue)](LICENSE)
 
-**[Download the latest release](https://github.com/hxfuxyy/ZetaCard/releases/latest)**
+**[Download the latest release](https://github.com/hxfuxyy/ZetaCard/releases/latest)** · [Changelog](CHANGELOG.md) · [Report a problem](https://github.com/hxfuxyy/ZetaCard/issues/new/choose)
 
 </div>
 
-ZetaCard is an LSPosed module that replaces the artwork of your payment cards inside Google Wallet with images you choose. Its manager app shows the original artwork next to your design, lets you crop or stretch a photo to the card shape, and restores the original look with one tap.
+ZetaCard is an LSPosed module that replaces the artwork of your payment cards inside Google Wallet. Pick one of the built-in Zeta designs or use any photo, preview it next to the original, and switch back with one tap.
 
 ZetaCard only changes how card artwork is drawn in the Wallet user interface. It does not read or modify payment credentials, tokens, NFC services or Google Play Services.
 
 ## Screenshots
 
-| Your cards | Crop editor | In Google Wallet |
+| Your cards | Zeta designs | In Google Wallet |
 |:---:|:---:|:---:|
-| <img src="docs/screenshots/cards.png" alt="ZetaCard card list showing original and custom artwork" width="220"> | <img src="docs/screenshots/design.png" alt="ZetaCard crop editor with a photo fitted to the card frame" width="220"> | <img src="docs/screenshots/wallet.png" alt="Custom artwork on a Google Wallet card" width="220"> |
+| <img src="docs/screenshots/cards.jpg" alt="Card list with the Zeta Holo design and a card name on it" width="240"> | <img src="docs/screenshots/design.jpg" alt="Design picker with six ready-made Zeta designs" width="240"> | <img src="docs/screenshots/wallet.jpg" alt="Zeta Holo design with a card name inside Google Wallet" width="240"> |
 
 ## Features
 
-- Custom artwork for each card, with the original artwork shown side by side.
-- Crop editor with pinch-to-zoom and drag, or stretch the whole photo to the card shape.
+- **Your own card artwork** with a large preview that switches between the original and your design.
+- **Six built-in Zeta designs** (Violet, Midnight, Aurora, Ocean, Holo, Pearl) that fit the card exactly and apply with one tap.
+- **Photo editor** with pinch-to-zoom, drag, or stretch, plus brightness and shade controls.
+- **Card name on the design** so cards stay easy to tell apart.
+- **Backup and restore** of every design and card name in a single file.
+- **Automatic card scan**: when no cards are known yet, or when you pull down to refresh, ZetaCard opens Google Wallet for a moment, reads your cards and comes back by itself.
+- **18 languages**, selectable inside the app under **⋮ → Language**: English, Ukrainian, Russian, Spanish, Portuguese (Brazil), French, German, Italian, Polish, Turkish, Vietnamese, Indonesian, Japanese, Korean, Chinese (Simplified and Traditional), Hindi and Arabic.
+- **Detailed diagnostics**: **⋮ → View logs → Export** creates one file with your device, root, LSPosed and Wallet details plus the event logs, ready to attach to an issue.
 - Automatic discovery of Wallet's artwork renderer, cached per Wallet version and rescanned after updates.
-- Wallet is restarted automatically so changes apply immediately.
-- Local card names, restore to original, and built-in diagnostic logs you can copy or export.
-- Material 3 interface with dynamic color on Android 12 and newer.
+- Material 3 with dynamic color and smooth animations throughout.
 
 ## Requirements
 
@@ -56,31 +57,34 @@ ZetaCard locates Wallet's internal artwork classes at runtime instead of relying
 2. Install the APK.
 3. In LSPosed or Vector, enable ZetaCard and make sure Google Wallet is in its scope.
 4. In your root manager (KernelSU, SukiSU, APatch or Magisk), make sure **Umount modules** or **DenyList** is turned **off** for Google Wallet (`com.google.android.apps.walletnfcrel`) so LSPosed can inject into its process. Keep unmount / DenyList enabled for Google Play Services and Play Store.
-   > [!NOTE]
-   > Root managers store unmount profiles per UID. If you reinstall Google Wallet, its UID changes and the profile resets to default with unmount enabled. Check and re-save this profile after reinstalling Wallet.
+   > **Note:** Root managers store unmount profiles per UID. If you reinstall Google Wallet, its UID changes and the profile resets to default with unmount enabled. Check and re-save this profile after reinstalling Wallet.
 5. Open ZetaCard and allow root access when your root manager asks.
 6. Force stop Google Wallet, open it, and view your cards once.
 
 > [!IMPORTANT]
-> Starting with 1.5, ZetaCard uses the package name `io.github.hxfuxyy.zetacard` (previously `dev.zxcwsurx.zetacard`) and is signed with a permanent release key. Android treats it as a new app, so it installs next to the old one:
+> **Updating from 1.5:** install 1.6 over the existing app. Your designs and settings are kept.
 >
-> 1. Install 1.5 and open it. With root granted, it copies your designs and card names from the old app.
-> 2. Uninstall the old ZetaCard. The app shows a reminder while it is still installed.
-> 3. In LSPosed or Vector, enable the new ZetaCard with Google Wallet in scope, then force stop and reopen Wallet.
+> **Updating from 1.4 or older** (package `dev.zxcwsurx.zetacard`): install 1.6 next to the old app and open it once with root to copy your designs and card names, then uninstall the old app.
+>
+> In both cases, enable the new ZetaCard in LSPosed or Vector with Google Wallet in scope, then force stop and reopen Wallet.
 
 ## Usage
 
-1. Open ZetaCard. Your Wallet cards appear with their original artwork. Pull down to refresh the list.
-2. Tap **Choose photo**, pick an image, and crop or stretch it to the card frame.
-3. Tap **Apply crop**. ZetaCard saves the artwork, syncs it to the module and restarts Wallet.
-4. Use **Restore** on a card to return to the original artwork, or the pencil icon to rename it locally.
+1. Open ZetaCard and finish setup. It checks that root is granted, the LSPosed module is active and Google Wallet is in the module scope.
+2. ZetaCard opens Google Wallet for a moment to find your cards and returns automatically. Pull down any time to scan again.
+3. Tap **Choose design**. Pick a Zeta design, or choose a photo and crop or stretch it to the card frame. Use **Adjust** for brightness and shade.
+4. ZetaCard saves the design, syncs it to the module and restarts Wallet.
+5. Turn on **Show card name on design** to print the card's name on your artwork. Rename a card with the pencil icon.
+6. Use **Restore** on a card to return to the original artwork.
+7. Before reinstalling or switching devices, use **⋮ → Back up designs**, and **⋮ → Restore from backup** afterwards.
 
 ## Troubleshooting
 
 | Problem | What to try |
 |---|---|
 | No cards appear or logs show no Wallet events | 1. Ensure ZetaCard is enabled in LSPosed with Google Wallet in scope.<br>2. In your root manager (KernelSU, SukiSU, APatch or Magisk), ensure **Umount modules** or **DenyList** is turned **off** for Google Wallet (keep it on for Google Play Services). If you reinstalled Wallet, re-check this profile because its UID changed.<br>3. Force stop Wallet, open it, view your cards, and pull down in ZetaCard to refresh. |
-| Root access shows "Not granted" | Grant root to ZetaCard in your root manager, then tap **Check again**. |
+| Setup does not let me continue | Both checks must pass. Grant root to ZetaCard in your root manager and enable the module in LSPosed with Google Wallet in scope, then tap **Check again**. |
+| Something else went wrong | Open **⋮ → View logs → Export** and attach the file to a [new issue](https://github.com/hxfuxyy/ZetaCard/issues/new/choose). |
 | Artwork does not change | Reopen Wallet once more. After installing or updating ZetaCard or Wallet, the module scans Wallet in the background on first launch and applies hooks on the next one. |
 | Logs show "Compose card structure not resolved" | Your Wallet version is not recognised. Please open an issue with exported logs. |
 | Wallet is slow to open or does not open | Update to ZetaCard 1.5 or newer, which moved the Wallet scan off the main thread. Include exported logs if it still happens. |
@@ -116,9 +120,3 @@ Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before
 ## License
 
 Copyright (c) 2026 hxfuxyy. ZetaCard is released under the [ZetaCard Source License 2.0](LICENSE). You may fork, modify, build and publish your own versions as long as you keep the license and clearly credit the original project: every fork must state that it is based on ZetaCard by hxfuxyy and link to this repository. Selling ZetaCard or derivatives requires permission. Third-party components keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-## Credits
-
-- [libxposed](https://github.com/libxposed) for the modern Xposed API and service library.
-- [LSPosed](https://github.com/LSPosed/LSPosed) and Vector for the framework.
-- [Primer Octicons](https://github.com/primer/octicons) for the GitHub mark.

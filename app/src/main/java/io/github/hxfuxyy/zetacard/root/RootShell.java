@@ -27,8 +27,12 @@ public final class RootShell {
     }
 
     public static byte[] run(String command) {
+        return run(command, DEFAULT_TIMEOUT_MS);
+    }
+
+    public static byte[] run(String command, long timeoutMs) {
         String[] prefix = resolve();
-        return prefix == null ? null : exec(prefix, command, DEFAULT_TIMEOUT_MS);
+        return prefix == null ? null : exec(prefix, command, timeoutMs);
     }
 
     private static synchronized String[] resolve() {

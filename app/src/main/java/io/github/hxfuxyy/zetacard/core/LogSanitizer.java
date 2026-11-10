@@ -29,6 +29,31 @@ public final class LogSanitizer {
         return error.getClass().getSimpleName() + (message == null || message.isEmpty() ? "" : ": " + clean(message));
     }
 
+    public static String stackTrace(Throwable error, int maxFrames) {
+        if (error == null) return "";
+        StringBuilder out = new StringBuilder();
+        Throwable current = error;
+        int depth = 0;
+        while (current != null && depth < 4) {
+            if (depth > 0) out.append("\n  caused by ");
+            else out.append("  ");
+            out.append(describe(current));
+            StackTraceElement[] frames = current.getStackTrace();
+            int count = Math.min(frames.length, depth == 0 ? maxFrames : Math.max(3, maxFrames / 3));
+            for (int i = 0; i < count; i++) {
+                StackTraceElement frame = frames[i];
+                out.append("\n    at ").append(frame.getClassName()).append('.').append(frame.getMethodName())
+                        .append('(').append(frame.getFileName() == null ? "?" : frame.getFileName())
+                        .append(':').append(frame.getLineNumber()).append(')');
+            }
+            if (frames.length > count) out.append("\n    … ").append(frames.length - count).append(" more");
+            Throwable cause = current.getCause();
+            current = cause == current ? null : cause;
+            depth++;
+        }
+        return out.toString();
+    }
+
     public static String trimToLastLines(String entries, int maxLength) {
         if (entries == null) return "";
         if (entries.length() <= maxLength) return entries;

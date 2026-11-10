@@ -25,9 +25,13 @@ Each card is identified by the SHA-256 hash of its artwork URL. The module write
 
 - Your chosen artwork, as PNG files in the app's private storage.
 - Original artwork previews and the card list with names you can edit.
-- A diagnostic log of app events, cleared every time the app is started fresh and limited to 32 KB.
+- A diagnostic log of app events and crashes, limited to 48 KB; the oldest entries are removed first.
 
 Artwork is shared with the module through LSPosed's module storage so Wallet can display it. App backups are disabled (`allowBackup="false"`). Uninstalling ZetaCard removes its data.
+
+## Backups
+
+Backups are created only when you choose **Back up designs**. The ZIP file contains your designs and card names and is saved wherever you pick; ZetaCard never uploads it. Restoring reads only the file you select.
 
 ## Network access
 
@@ -35,7 +39,7 @@ The `INTERNET` permission is used only to download the original artwork image fo
 
 ## Root access
 
-ZetaCard uses root to read the files listed above from Wallet's private storage and to stop the Wallet process so new artwork applies. While the previous app `dev.zxcwsurx.zetacard` is installed, it also uses root once to copy that app's artwork, previews and card names into its own storage. Commands use the data directories Android reports for the current user, validated card IDs and fixed file names, and only the current user's Wallet process is restarted.
+ZetaCard uses root to read the files listed above from Wallet's private storage, to stop the Wallet process so new artwork applies, and to open Google Wallet briefly and return to ZetaCard when scanning for cards (automatically at most every six hours while no cards are known, or when you pull down to refresh). While the previous app `dev.zxcwsurx.zetacard` is installed, it also uses root once to copy that app's artwork, previews and card names into its own storage. Commands use the data directories Android reports for the current user, validated card IDs and fixed file names, and only the current user's Wallet process is restarted.
 
 ## Photos
 
@@ -43,7 +47,9 @@ ZetaCard uses the Android photo picker and receives only the image you select. T
 
 ## Diagnostic logs
 
-Logs stay on the device. They are shared only if you copy or export them. Messages are redacted to remove URLs, email addresses, private storage paths and long digit sequences. An exported log also includes your device manufacturer and model, Android version, firmware and build ID, and the installed ZetaCard and Google Wallet versions. Review an exported file before sharing it.
+Logs stay on the device. They are shared only if you copy or export them. Messages are redacted to remove URLs, email addresses, private storage paths and long digit sequences. If the app crashes, the error type and stack trace are added to the log.
+
+An exported log, and the **View logs** screen, also include: device manufacturer, model and codename, Android version and security patch, firmware name and build fingerprint, CPU architecture, app language, ZetaCard, Google Wallet, LSPosed and root manager versions, whether Wallet is in the module scope, a list of your cards by shortened ID with their design status, and the class names of the Wallet hooks the module found. Card IDs are shortened hashes of artwork URLs, not card numbers. Review an exported file before sharing it.
 
 ## Contact
 

@@ -69,13 +69,26 @@ Releases up to 1.4 used the package name `dev.zxcwsurx.zetacard` and were signed
 
 ## Xposed Modules Repository
 
-The [Xposed Modules Repository](https://modules.lsposed.org/submission) requires the repository name to be the package name, a non-empty repository description with the module name, and releases tagged `versionCode-versionName` with an APK asset.
+ZetaCard is published to the [Xposed Modules Repository](https://modules.lsposed.org), which LSPosed shows in its module list. The module lives in `Xposed-Modules-Repo/io.github.hxfuxyy.zetacard`, and the **Publish to Xposed Modules Repository** workflow (`publish-xposed.yml`) keeps it up to date:
 
-1. Submit the module at <https://modules.lsposed.org/submission>. Once approved you get access to `Xposed-Modules-Repo/io.github.hxfuxyy.zetacard`.
-2. Set that repository's description to `ZetaCard` and copy the README text into its `README.md`.
-3. Create a fine-grained personal access token with **Contents: read and write** on that repository only, and add it to this repository as the secret `XPOSED_REPO_TOKEN`.
+- On every stable release it downloads the signed APK from the GitHub Release, checks it against the published SHA-256 file and creates the release `<versionCode>-<versionName>` (for example `160-1.6`) with the same notes. Prereleases are skipped.
+- It copies `xposed/README.md`, `xposed/SUMMARY`, `xposed/SOURCE_URL` and `xposed/SCOPE` into the module repository and keeps its description set to `ZetaCard`. Editing anything in `xposed/` on `main` syncs the module page automatically.
+- It never rebuilds the APK, and re-running it does nothing when everything is already published.
 
-After every stable release, the release workflow starts **Publish to Xposed Modules Repository** (`publish-xposed.yml`). It downloads the APK already attached to the GitHub Release, checks it against the published SHA-256 file, and creates the release `<versionCode>-<versionName>` (for example `150-1.5`) in the module repository. If that step fails or the token was missing, add or fix the secret and run the workflow manually from **Actions** with the release tag, such as `v1.5`. It never rebuilds the APK and skips work that is already done.
+### One-time setup
+
+1. Submit the module: open an issue titled `[submission] io.github.hxfuxyy.zetacard` in [Xposed-Modules-Repo/submission](https://github.com/Xposed-Modules-Repo/submission). The bot creates `Xposed-Modules-Repo/io.github.hxfuxyy.zetacard` and invites you as an admin. Accept the invitation.
+2. Create a token that can write to that repository:
+   - Preferred: a fine-grained token (**Settings → Developer settings → Fine-grained tokens**) with resource owner **Xposed-Modules-Repo**, access to **only** `io.github.hxfuxyy.zetacard`, and permissions **Contents: Read and write** and **Administration: Read and write**. If the organization is not offered or the token stays pending, the organization does not allow fine-grained tokens; use the fallback.
+   - Fallback: a classic token with only the `public_repo` scope. It can write to every public repository you have access to, so give it an expiry date and do not use it anywhere else.
+3. Add it to `hxfuxyy/ZetaCard` as the repository secret `XPOSED_REPO_TOKEN`.
+4. Run **Actions → Publish to Xposed Modules Repository → Run workflow** with an empty tag. It syncs the module page and publishes the latest stable release. After about five minutes the module appears on modules.lsposed.org and in LSPosed.
+
+### Later
+
+- Releases publish automatically after the Release workflow. If a run fails, fix the cause and run the workflow again with the tag, for example `v1.6`.
+- To update only the module page, edit the files in `xposed/` and push to `main`, or run the workflow with **metadata only** checked.
+- Renew the token before it expires; the workflow logs a notice and skips publishing when the secret is missing.
 
 ## Publishing a release
 
