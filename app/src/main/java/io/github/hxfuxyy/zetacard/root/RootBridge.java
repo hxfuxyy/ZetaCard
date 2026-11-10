@@ -21,6 +21,9 @@ import javax.net.ssl.HttpsURLConnection;
 
 public final class RootBridge {
     public static final String WALLET_PACKAGE = "com.google.android.apps.walletnfcrel";
+    private static final java.util.regex.Pattern SAFE_COMPONENT = java.util.regex.Pattern.compile("[A-Za-z0-9._$]+/[A-Za-z0-9._$]+");
+    private static final long SCAN_POLL_MS = 350L;
+    private static final long SCAN_SETTLE_MS = 700L;
     private static final java.util.regex.Pattern SAFE_PATH = java.util.regex.Pattern.compile("/[A-Za-z0-9._/-]+");
     private static final int NETWORK_TIMEOUT_MS = 8000;
     private static final java.util.Set<String> missingStock = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -59,13 +62,57 @@ public final class RootBridge {
         return files == null ? null : text(RootShell.run("tail -n 200 " + files + "/zetacard_events.log"));
     }
 
-    public static boolean restartWallet(Context context) {
-        int uid;
+    public static String rootVersion() {
+        if (!RootShell.isAvailable()) return null;
+        return text(RootShell.run("su -v 2>/dev/null || echo unknown"));
+    }
+
+    public static boolean scanWallet(Context context, long timeoutMs) {
+        if (!RootShell.isAvailable()) return false;
+        String files = walletFiles(context);
+        int uid = walletUid(context);
+        android.content.Intent launch = context.getPackageManager().getLaunchIntentForPackage(WALLET_PACKAGE);
+        if (files == null || uid < 0 || launch == null || launch.getComponent() == null) return false;
+        String wallet = launch.getComponent().flattenToString();
+        String self = new android.content.ComponentName(context, "io.github.hxfuxyy.zetacard.MainActivity").flattenToString();
+        if (!SAFE_COMPONENT.matcher(wallet).matches() || !SAFE_COMPONENT.matcher(self).matches()) return false;
+        long polls = Math.max(1, timeoutMs / SCAN_POLL_MS);
+        String script = "probe() { cat " + files + "/zetacard_cards.tsv " + files + "/zetacard_heartbeat 2>/dev/null | md5sum; }; " +
+                "before=$(probe); " + killWallet(uid) +
+                "am start -n " + wallet + " -f 0x10000000 >/dev/null 2>&1 || { echo started=0; exit 0; }; " +
+                "seen=0; i=0; while [ $i -lt " + polls + " ]; do sleep " + seconds(SCAN_POLL_MS) + "; " +
+                "if [ \"$(probe)\" != \"$before\" ]; then seen=1; sleep " + seconds(SCAN_SETTLE_MS) + "; break; fi; i=$((i+1)); done; " +
+                "am start -n " + self + " -f 0x10020000 >/dev/null 2>&1; echo seen=$seen";
+        String result = text(RootShell.run(script, timeoutMs + 8000L));
+        return result != null && result.contains("seen=1");
+    }
+
+    private static String seconds(long millis) {
+        return String.format(java.util.Locale.US, "%.2f", millis / 1000.0);
+    }
+
+    private static int walletUid(Context context) {
         try {
-            uid = context.getPackageManager().getApplicationInfo(WALLET_PACKAGE, 0).uid;
+            return context.getPackageManager().getApplicationInfo(WALLET_PACKAGE, 0).uid;
         } catch (PackageManager.NameNotFoundException ignored) {
-            return false;
+            return -1;
         }
+    }
+
+    private static String killWallet(int uid) {
+        return "for p in $(pidof " + WALLET_PACKAGE + "); do " +
+                "if [ \"$(stat -c %u /proc/$p)\" = \"" + uid + "\" ]; then kill -9 $p; fi; done; ";
+    }
+
+    public static String walletHookCache(Context context) {
+        String data = dataDirectory(context, WALLET_PACKAGE);
+        if (data == null) return null;
+        return text(RootShell.run("cat " + data + "/shared_prefs/zetacard_hook_cache.xml"));
+    }
+
+    public static boolean restartWallet(Context context) {
+        int uid = walletUid(context);
+        if (uid < 0) return false;
         String command = "killed=0; for p in $(pidof " + WALLET_PACKAGE + "); do " +
                 "if [ \"$(stat -c %u /proc/$p)\" = \"" + uid + "\" ]; then kill -9 $p && killed=1; fi; done; [ $killed = 1 ]";
         return RootShell.run(command) != null;

@@ -21,6 +21,8 @@ import io.github.hxfuxyy.zetacard.core.CardIds;
 import io.github.hxfuxyy.zetacard.core.CardLabels;
 import io.github.hxfuxyy.zetacard.core.CardRegistry;
 import io.github.hxfuxyy.zetacard.core.LogSanitizer;
+import io.github.hxfuxyy.zetacard.data.ArtSync;
+import io.github.hxfuxyy.zetacard.image.CaptionRenderer;
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface;
@@ -48,6 +50,9 @@ public final class WalletHook extends XposedModule {
     private static final String WALLET = "com.google.android.apps.walletnfcrel";
     private static final String HOOK_CACHE = "zetacard_hook_cache";
     private static final String REGISTRY_FILE = "zetacard_cards.tsv";
+    private static final String HEARTBEAT_FILE = "zetacard_heartbeat";
+    private static final long HEARTBEAT_INTERVAL_MS = 1500L;
+    private static final long ART_RETRY_MS = 15_000L;
     private static final String DISK_CACHE_MARKER = "image_manager_disk_cache";
     private static final long SCAN_BUDGET_MS = 45_000L;
     private static final int STOCK_WIDTH = 700;
@@ -60,7 +65,7 @@ public final class WalletHook extends XposedModule {
     private final Set<String> capturedStock = ConcurrentHashMap.newKeySet();
     private final Set<String> composeCardUrls = ConcurrentHashMap.newKeySet();
     private final Set<String> loggedOnce = ConcurrentHashMap.newKeySet();
-    private final Set<String> failedArt = ConcurrentHashMap.newKeySet();
+    private final Map<String, Long> failedArt = new ConcurrentHashMap<>();
     private final Map<String, CardRegistry.Entry> discovered = new LinkedHashMap<>();
     private final LruCache<String, Bitmap> bitmaps = new LruCache<String, Bitmap>(16 * 1024) {
         @Override protected int sizeOf(String key, Bitmap value) { return value.getByteCount() / 1024; }
@@ -72,6 +77,7 @@ public final class WalletHook extends XposedModule {
         return thread;
     });
     private String pendingRegistry;
+    private volatile long lastHeartbeat;
     private volatile WalletEventLog eventLog;
     private volatile boolean composeInstalled;
     private boolean searched;
@@ -428,7 +434,21 @@ public final class WalletHook extends XposedModule {
         }
     }
 
+    private void heartbeat(Context context) {
+        long now = System.currentTimeMillis();
+        if (now - lastHeartbeat < HEARTBEAT_INTERVAL_MS) return;
+        lastHeartbeat = now;
+        storage.execute(() -> {
+            try (FileOutputStream stream = new FileOutputStream(new File(context.getFilesDir(), HEARTBEAT_FILE))) {
+                stream.write(Long.toString(now).getBytes(StandardCharsets.UTF_8));
+            } catch (Throwable error) {
+                warn("heartbeat", "Card heartbeat skipped", error);
+            }
+        });
+    }
+
     private void discoverComposeCard(Context context, String source) {
+        heartbeat(context);
         if (source == null || !"https".equals(Uri.parse(source).getScheme())) return;
         composeCardUrls.add(source);
         String id = CardIds.fromSource(source);
@@ -508,20 +528,28 @@ public final class WalletHook extends XposedModule {
     private Bitmap loadArt(String id) {
         String key = null;
         try {
-            long revision = getRemotePreferences("art").getLong(id, -1);
+            SharedPreferences preferences = getRemotePreferences("art");
+            long revision = preferences.getLong(id, -1);
             if (revision < 0) return null;
-            key = id + ":remote:" + revision;
+            String caption = preferences.getString(ArtSync.CAPTION_PREFIX + id, null);
+            key = id + ":remote:" + revision + ":" + (caption == null ? "" : caption.hashCode());
             Bitmap cached = bitmaps.get(key);
             if (cached != null) return cached;
-            if (failedArt.contains(key)) return null;
+            Long failedAt = failedArt.get(key);
+            if (failedAt != null && System.currentTimeMillis() - failedAt < ART_RETRY_MS) return null;
             try (ParcelFileDescriptor file = openRemoteFile("art_" + id)) {
                 Bitmap image = BitmapFactory.decodeFileDescriptor(file.getFileDescriptor());
-                if (image != null) bitmaps.put(key, image);
-                else failedArt.add(key);
+                if (image != null && caption != null) image = CaptionRenderer.render(image, caption);
+                if (image != null) {
+                    bitmaps.put(key, image);
+                    failedArt.remove(key);
+                } else {
+                    failedArt.put(key, System.currentTimeMillis());
+                }
                 return image;
             }
         } catch (Throwable error) {
-            if (key != null) failedArt.add(key);
+            if (key != null) failedArt.put(key, System.currentTimeMillis());
             warn("remote-art", "LSPosed artwork unavailable", error);
         }
         return null;
@@ -576,6 +604,7 @@ public final class WalletHook extends XposedModule {
     }
 
     private void paint(Context context, Object[] args) throws Exception {
+        heartbeat(context);
         if (args.length != 3 || !(args[0] instanceof Drawable) || !(args[1] instanceof ImageView) || args[2] == null) return;
         Uri original = null;
         String label = CardLabels.DEFAULT;

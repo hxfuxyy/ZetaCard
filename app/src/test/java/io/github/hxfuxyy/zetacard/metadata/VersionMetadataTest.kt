@@ -36,6 +36,18 @@ class VersionMetadataTest {
         assertTrue(File(moduleDir, "build.gradle").readText().contains("applicationId 'io.github.hxfuxyy.zetacard'"))
     }
 
+    @Test
+    fun xposedRepositoryMetadataMatchesTheModule() {
+        val root = moduleDir.parentFile
+        val scope = File(root, "xposed/SCOPE").readText().trim()
+        val packages = Regex(""""([^"]+)"""").findAll(scope).map { it.groupValues[1] }.toList()
+        assertEquals(xposedFile("scope.list").readLines().map { it.trim() }.filter { it.isNotEmpty() }, packages)
+        val summary = File(root, "xposed/SUMMARY").readText().trim()
+        assertTrue("SUMMARY must be one short line", summary.isNotEmpty() && summary.length <= 200 && !summary.contains('\n'))
+        assertEquals("https://github.com/hxfuxyy/ZetaCard", File(root, "xposed/SOURCE_URL").readText().trim())
+        assertTrue(File(root, "xposed/README.md").readText().contains("ZetaCard"))
+    }
+
     private fun xposedFile(name: String) = File(moduleDir, "src/main/resources/META-INF/xposed/$name")
 
     private fun locateModuleDir(): File {

@@ -15,15 +15,18 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import io.github.hxfuxyy.zetacard.R
 
 @Composable
 fun LogsDialog(logs: String, onExport: () -> Unit, onClose: () -> Unit) {
     val context = LocalContext.current
+    val clipLabel = stringResource(R.string.logs_title)
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text("Logs") },
+        title = { Text(stringResource(R.string.logs_title)) },
         text = {
             SelectionContainer {
                 Text(
@@ -36,14 +39,14 @@ fun LogsDialog(logs: String, onExport: () -> Unit, onClose: () -> Unit) {
         },
         confirmButton = {
             Row {
-                TextButton(onClick = onExport) { Text("Export") }
+                TextButton(onClick = onExport) { Text(stringResource(R.string.action_export)) }
                 TextButton(onClick = {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                    clipboard?.setPrimaryClip(ClipData.newPlainText("ZetaCard logs", logs))
+                    clipboard?.setPrimaryClip(ClipData.newPlainText(clipLabel, logs))
                     onClose()
-                }) { Text("Copy") }
+                }) { Text(stringResource(R.string.action_copy)) }
             }
         },
-        dismissButton = { TextButton(onClick = onClose) { Text("Close") } },
+        dismissButton = { TextButton(onClick = onClose) { Text(stringResource(R.string.action_close)) } },
     )
 }

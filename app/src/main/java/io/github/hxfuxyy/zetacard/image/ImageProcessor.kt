@@ -1,14 +1,18 @@
 package io.github.hxfuxyy.zetacard.image
 
 import android.content.ContentResolver
+import android.content.res.AssetManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.ImageDecoder
 import android.graphics.Paint
 import android.graphics.RectF
 import android.net.Uri
 import io.github.hxfuxyy.zetacard.core.CropTransform
+import io.github.hxfuxyy.zetacard.core.ImageAdjustments
 import io.github.hxfuxyy.zetacard.core.ImageLimits
 import java.io.File
 import java.io.FileOutputStream
@@ -31,30 +35,47 @@ object ImageProcessor {
         }
     }
 
-    fun decodePreview(file: File, targetWidth: Int): Bitmap? {
+    fun decodePreview(file: File, targetWidth: Int, caption: String? = null): Bitmap? {
         if (!file.isFile) return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.path, bounds)
         if (!ImageLimits.isDecodable(bounds.outWidth, bounds.outHeight)) return null
         val sample = ImageLimits.sampleSize(bounds.outWidth, bounds.outHeight, targetWidth.coerceAtLeast(1) * 2)
-        return BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
+        val bitmap = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
+        return if (caption != null) CaptionRenderer.render(bitmap, caption) else bitmap
     }
 
-    fun renderCrop(source: Bitmap, transform: CropTransform): Bitmap {
+    fun renderCrop(source: Bitmap, transform: CropTransform, adjustments: ImageAdjustments = ImageAdjustments.Neutral): Bitmap {
         val result = Bitmap.createBitmap(ImageLimits.OUTPUT_WIDTH, ImageLimits.OUTPUT_HEIGHT, Bitmap.Config.ARGB_8888)
         Canvas(result).apply {
             translate(transform.translateX, transform.translateY)
             scale(transform.scaleX, transform.scaleY)
-            drawBitmap(source, 0f, 0f, renderPaint)
+            drawBitmap(source, 0f, 0f, paintFor(adjustments))
         }
         return result
     }
 
-    fun renderStretch(source: Bitmap): Bitmap {
+    fun renderStretch(source: Bitmap, adjustments: ImageAdjustments = ImageAdjustments.Neutral): Bitmap {
         val result = Bitmap.createBitmap(ImageLimits.OUTPUT_WIDTH, ImageLimits.OUTPUT_HEIGHT, Bitmap.Config.ARGB_8888)
         val bounds = RectF(0f, 0f, ImageLimits.OUTPUT_WIDTH.toFloat(), ImageLimits.OUTPUT_HEIGHT.toFloat())
-        Canvas(result).drawBitmap(source, null, bounds, renderPaint)
+        Canvas(result).drawBitmap(source, null, bounds, paintFor(adjustments))
         return result
+    }
+
+    fun decodeAsset(assets: AssetManager, path: String, targetWidth: Int = 0): Bitmap {
+        val options = BitmapFactory.Options()
+        if (targetWidth > 0) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            assets.open(path).use { BitmapFactory.decodeStream(it, null, bounds) }
+            options.inSampleSize = ImageLimits.sampleSize(bounds.outWidth, bounds.outHeight, targetWidth)
+        }
+        return assets.open(path).use { BitmapFactory.decodeStream(it, null, options) }
+            ?: throw IOException("Could not decode $path")
+    }
+
+    private fun paintFor(adjustments: ImageAdjustments): Paint {
+        if (adjustments.isNeutral) return renderPaint
+        return Paint(renderPaint).apply { colorFilter = ColorMatrixColorFilter(ColorMatrix(adjustments.colorMatrix())) }
     }
 
     fun writePng(target: File, image: Bitmap) {

@@ -2,9 +2,11 @@ package io.github.hxfuxyy.zetacard.data;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import io.github.hxfuxyy.zetacard.R;
 import io.github.hxfuxyy.zetacard.core.CardIds;
 import io.github.hxfuxyy.zetacard.core.CardLabels;
 import io.github.hxfuxyy.zetacard.core.CardRegistry;
+import io.github.hxfuxyy.zetacard.core.CaptionRules;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -18,8 +20,11 @@ public final class ArtStore {
     private static final String KEY_IDS = "ids";
     private static final String KEY_WELCOMED = "welcomed";
     private static final String KEY_LEGACY_MIGRATED = "legacy_migrated";
+    private static final String KEY_LAST_AUTO_SCAN = "last_auto_scan";
     private static final String NAME_PREFIX = "name.";
     private static final String SYNCED_PREFIX = "synced.";
+    private static final String CAPTION_PREFIX = "caption.";
+    private static final String SYNCED_CAPTION_PREFIX = "synced_caption.";
     private static final String ART_DIRECTORY = "art";
     private static final String STOCK_DIRECTORY = "stock";
 
@@ -96,6 +101,52 @@ public final class ArtStore {
         if (revision < 0) editor.remove(SYNCED_PREFIX + id);
         else editor.putLong(SYNCED_PREFIX + id, revision);
         editor.apply();
+    }
+
+    public static boolean isCaptionEnabled(Context context, String id) {
+        return prefs(context).getBoolean(CAPTION_PREFIX + id, false);
+    }
+
+    public static void setCaptionEnabled(Context context, String id, boolean enabled) {
+        requireValid(id);
+        prefs(context).edit().putBoolean(CAPTION_PREFIX + id, enabled).apply();
+    }
+
+    public static String captionText(Context context, String id) {
+        if (!isCaptionEnabled(context, id)) return null;
+        String name = name(context, id);
+        if (CardLabels.DEFAULT.equals(name)) name = context.getString(R.string.card_default_name);
+        return CaptionRules.INSTANCE.text(name);
+    }
+
+    public static String syncedCaption(Context context, String id) {
+        return prefs(context).getString(SYNCED_CAPTION_PREFIX + id, null);
+    }
+
+    public static void setSyncedCaption(Context context, String id, String caption) {
+        requireValid(id);
+        SharedPreferences.Editor editor = prefs(context).edit();
+        if (caption == null) editor.remove(SYNCED_CAPTION_PREFIX + id);
+        else editor.putString(SYNCED_CAPTION_PREFIX + id, caption);
+        editor.apply();
+    }
+
+    public static void setNameFromBackup(Context context, String id, String name) {
+        requireValid(id);
+        String clean = CardLabels.forUserInput(name);
+        if (clean.isEmpty()) return;
+        String current = prefs(context).getString(NAME_PREFIX + id, null);
+        if (current == null || current.trim().isEmpty() || CardLabels.DEFAULT.equals(current)) {
+            prefs(context).edit().putString(NAME_PREFIX + id, clean).apply();
+        }
+    }
+
+    public static long lastAutoScan(Context context) {
+        return prefs(context).getLong(KEY_LAST_AUTO_SCAN, 0L);
+    }
+
+    public static void setLastAutoScan(Context context, long time) {
+        prefs(context).edit().putLong(KEY_LAST_AUTO_SCAN, time).apply();
     }
 
     public static boolean isLegacyMigrated(Context context) {
